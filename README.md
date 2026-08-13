@@ -33,10 +33,15 @@ npm run dev
 Quality checks:
 
 ```bash
+npm run diagnostics
+npm run typecheck
 npm run lint
-npm run build
+npm test
+npm audit --omit=dev
 ```
+
+`npm run diagnostics` runs a seeded 100,000-scenario operating and unit-economics stress test. Its aggregate results are stored in `diagnostics/monte-carlo-results.json`; the assumptions are deliberately broad stress inputs, not measured market forecasts.
 
 ## Production-readiness gate
 
-Before accepting live orders, add persistent storage, authenticated operator roles, server-side validation, audit logging, notification integrations, and a tested settlement/refund process. Validate the operating model with one supplier corridor and three to five recurring buyers before scaling inventory or transport commitments.
+Before accepting live orders, configure persistent D1/R2 storage, authenticated operator roles, server-side validation, audit logging, notification integrations, and a tested settlement/refund process. Validate the operating model with one supplier corridor and three to five recurring buyers before scaling inventory or transport commitments.

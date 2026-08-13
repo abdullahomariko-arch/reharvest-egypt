@@ -1,6 +1,12 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import diagnostics from "../diagnostics/monte-carlo-results.json";
+import {
+  calculateOrderEconomics,
+  evaluateEconomicGuardrails,
+  PILOT_GUARDRAILS,
+} from "../lib/economics";
 
 type Demand = {
   id: string; buyer: string; area: string; crop: string; grade: string;
@@ -14,20 +20,72 @@ const starterDemands: Demand[] = [
   { id: "DEM-1038", buyer: "Table Nine Catering", area: "6th of October", crop: "Kitchen potatoes", grade: "Kitchen grade", quantity: 1500, targetPrice: 10.25, delivery: "13 Aug · 6:30 AM", use: "Central kitchen prep", match: 63, status: "Sourcing" },
 ];
 
-const navItems = [["overview", "Overview", "home"], ["demand", "Demand board", "list"], ["matches", "Matches", "link"], ["orders", "Orders", "truck"]] as const;
+const navItems = [["overview", "Overview", "home"], ["demand", "Demand board", "list"], ["matches", "Matches", "link"], ["orders", "Orders", "truck"], ["diagnostics", "Diagnostics", "shield"]] as const;
 
 const viewCopy: Record<string, { title: string; description: string }> = {
   overview: { title: "Good evening, Omar.", description: "The tomato corridor has one decision waiting before tomorrow’s collection." },
   demand: { title: "Confirmed buyer demand.", description: "Buy only what a buyer has requested, at a price that protects the landed margin." },
   matches: { title: "Match usable produce.", description: "Compare verified supplier lots against quantity, grade, timing, and total landed cost." },
   orders: { title: "Protect every handoff.", description: "Track collection, quality acceptance, delivery, and payment without losing the audit trail." },
+  diagnostics: { title: "Know the risk before collection.", description: "One hundred thousand stress scenarios translated into enforceable operating rules." },
 };
 
 const supplyMatches = [
-  { id: "LOT-238", supplier: "El Wadi Farms", origin: "Badr, Beheira", crop: "Sauce tomatoes", quantity: 1400, usable: 92, price: 6.8, match: 94, pickup: "Today · 5:30 PM" },
-  { id: "LOT-233", supplier: "Nile Citrus Growers", origin: "Abu Rawash, Giza", crop: "Juice oranges", quantity: 950, usable: 89, price: 8.9, match: 81, pickup: "Tomorrow · 6:00 AM" },
-  { id: "LOT-227", supplier: "Delta Harvest", origin: "Kafr El Zayat", crop: "Kitchen potatoes", quantity: 1800, usable: 95, price: 7.6, match: 76, pickup: "12 Aug · 4:30 AM" },
+  { id: "LOT-238", supplier: "El Wadi Farms", origin: "Badr, Beheira", crop: "Sauce tomatoes", quantity: 1400, demandKg: 1200, usable: 92, price: 4.75, buyerPrice: 9.5, transport: 1.8, match: 94, pickup: "Today · 5:30 PM" },
+  { id: "LOT-233", supplier: "Nile Citrus Growers", origin: "Abu Rawash, Giza", crop: "Juice oranges", quantity: 950, demandKg: 800, usable: 89, price: 8.9, buyerPrice: 12, transport: 1.25, match: 81, pickup: "Tomorrow · 6:00 AM" },
+  { id: "LOT-227", supplier: "Delta Harvest", origin: "Kafr El Zayat", crop: "Kitchen potatoes", quantity: 1800, demandKg: 1500, usable: 95, price: 7.6, buyerPrice: 10.25, transport: 1.3, match: 76, pickup: "12 Aug · 4:30 AM" },
 ];
+
+const tomatoPilotEconomics = calculateOrderEconomics({
+  deliveredKg: 1200,
+  buyerPricePerKg: 9.5,
+  supplierPricePerPurchasedKg: 4.75,
+  sortingLossPct: 8,
+  transportPerDeliveredKg: 1.8,
+  handlingPerDeliveredKg: 0.35,
+  inspectionPerDeliveredKg: 0.25,
+  claimsReservePerDeliveredKg: 0.2,
+});
+
+const operatingRules = [
+  "Collect a 30% buyer deposit before a supplier lot is reserved.",
+  "Block any lot that is unverified or above 15% expected sorting loss.",
+  "Require at least EGP 1.00/kg contribution and a 10% contribution margin.",
+  "Reconfirm supplier quantity before dispatching a vehicle.",
+  "Do not permit pickup until inspection, photographs, and loaded weight are recorded.",
+  "Expire quotations and reservations automatically; never silently change confirmed terms.",
+  "Require proof of delivery and buyer weight before acceptance.",
+  "Block supplier settlement while a dispute or food-safety incident is open.",
+];
+
+const integrationRoadmap = [
+  { phase: "Build first", name: "Cloudflare D1 + R2", use: "Orders, audit records, photographs, scale slips and traceability." },
+  { phase: "Pilot next", name: "WhatsApp Business Platform", use: "Confirmed order summaries, driver alerts and acceptance requests." },
+  { phase: "After contracts", name: "Paymob", use: "Deposits and payment status through a server-side payment adapter." },
+  { phase: "After route density", name: "Google Routes", use: "Distance, traffic-aware ETA and multi-stop route optimization." },
+  { phase: "Before scale", name: "Egyptian eInvoicing", use: "Tax-compliant invoice submission and document status." },
+  { phase: "Before scale", name: "Sentry + product analytics", use: "Errors, slow workflows, release safety and operator usage." },
+];
+
+function lotDecision(lot: (typeof supplyMatches)[number]) {
+  const sortingLossPct = 100 - lot.usable;
+  const economics = calculateOrderEconomics({
+    deliveredKg: lot.demandKg,
+    buyerPricePerKg: lot.buyerPrice,
+    supplierPricePerPurchasedKg: lot.price,
+    sortingLossPct,
+    transportPerDeliveredKg: lot.transport,
+    handlingPerDeliveredKg: 0.35,
+    inspectionPerDeliveredKg: 0.25,
+    claimsReservePerDeliveredKg: 0.2,
+  });
+  return { economics, rules: evaluateEconomicGuardrails(economics, sortingLossPct) };
+}
+
+function humanizeDiagnosticKey(key: string) {
+  const label = key.replace(/([A-Z])/g, " $1").trim().toLowerCase();
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
 
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
   const paths: Record<string, React.ReactNode> = {
@@ -41,6 +99,7 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
     leaf: <><path d="M20 4C12 4 6 8 6 14c0 3 2 5 5 5 6 0 9-7 9-15Z"/><path d="M4 21c2-5 6-9 12-12"/></>, check: <path d="m5 12 4 4L19 6"/>,
     clock: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>, calculator: <><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01"/></>,
     close: <path d="m6 6 12 12M18 6 6 18"/>,
+    shield: <><path d="M12 3 20 6v5c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V6l8-3Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -65,7 +124,13 @@ export default function ReHarvestApp() {
   const [isDemandOpen, setDemandOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [acceptedLots, setAcceptedLots] = useState<string[]>([]);
+  const [demandFilter, setDemandFilter] = useState<"all" | "needs-match" | "matched">("all");
   const pipelineKg = useMemo(() => demands.reduce((sum, item) => sum + item.quantity, 0), [demands]);
+  const visibleDemands = useMemo(() => demands.filter((demand) => {
+    if (demandFilter === "matched") return demand.status === "Matched";
+    if (demandFilter === "needs-match") return demand.status !== "Matched";
+    return true;
+  }), [demands, demandFilter]);
 
   function submitDemand(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const data = new FormData(event.currentTarget);
@@ -87,29 +152,30 @@ export default function ReHarvestApp() {
       <div className="profile-card"><span className="avatar">OA</span><div><strong>Omar</strong><span>Pilot operator</span></div><button className="profile-menu" aria-label="Profile menu">•••</button></div>
     </aside>
     <section className="workspace" id="top">
-      <header className="topbar"><div className="search-box"><Icon name="search" size={17} /><input aria-label="Search marketplace" placeholder="Search demand, supply, or partner" /><kbd>⌘ K</kbd></div><div className="top-actions"><span className="live-pill"><i /> Pilot live</span><button className="icon-button" aria-label="Notifications"><Icon name="bell" /></button><button className="primary-button" onClick={() => setDemandOpen(true)}><Icon name="plus" />Post demand</button></div></header>
+      <header className="topbar"><div className="search-box search-disabled"><Icon name="search" size={17} /><input aria-label="Search marketplace" placeholder="Search activates with live data" disabled /><kbd>Planned</kbd></div><div className="top-actions"><span className="live-pill"><i /> Pilot simulation</span><button className="icon-button" aria-label="Show notification status" onClick={() => setNotice("Notifications remain simulated until the WhatsApp integration is connected.")}><Icon name="bell" /></button><button className="primary-button" onClick={() => setDemandOpen(true)}><Icon name="plus" />Post demand</button></div></header>
       <div className={`content content-${activeView}`}>
-        <section className="welcome-row"><div><span className="eyebrow">Monday · 10 August 2026</span><h1>{viewCopy[activeView].title}</h1><p>{viewCopy[activeView].description}</p></div><div className="weather-note"><span>34°</span><div><strong>Warm route</strong><small>Plan an early pickup</small></div></div></section>
+        <section className="welcome-row"><div><span className="eyebrow">Pilot model · August 2026</span><h1>{viewCopy[activeView].title}</h1><p>{viewCopy[activeView].description}</p></div><div className="weather-note"><Icon name="clock" size={24} /><div><strong>Early pickup rule</strong><small>Weather data integration planned</small></div></div></section>
         {notice && <div className="notice" role="status"><span><Icon name="check" size={16} /></span>{notice}<button onClick={() => setNotice("")} aria-label="Dismiss notice"><Icon name="close" size={15} /></button></div>}
-        <section className="corridor-card"><div className="corridor-copy"><span className="eyebrow light">Today’s transaction corridor</span><h2>Sauce-grade tomatoes</h2><p>Verified lots from Beheira matched to kitchens in New Cairo. Collection closes at 2:00 PM.</p></div><div className="route-line" aria-label="Route from Beheira to New Cairo"><span><i /><small>Beheira</small></span><b><span>146 km</span></b><span><i /><small>New Cairo</small></span></div><button className="light-button">Open corridor <Icon name="arrow" size={16} /></button></section>
-        <section className="metric-grid" aria-label="Pilot metrics"><article><div className="metric-icon green"><Icon name="link" /></div><div><span>Matched demand</span><strong>{pipelineKg.toLocaleString()} kg</strong><small><b>+12%</b> since Friday</small></div></article><article><div className="metric-icon orange"><Icon name="truck" /></div><div><span>Orders moving</span><strong>3</strong><small>2 deliveries tomorrow</small></div></article><article><div className="metric-icon red"><Icon name="calculator" /></div><div><span>Projected spread</span><strong>EGP 8.40/kg</strong><small>After route + sorting</small></div></article><article><div className="metric-icon olive"><Icon name="leaf" /></div><div><span>Produce redirected</span><strong>4.7 t</strong><small>Across current pilot</small></div></article></section>
+        <section className="corridor-card"><div className="corridor-copy"><span className="eyebrow light">Pilot transaction corridor</span><h2>Sauce-grade tomatoes</h2><p>Verified lots from Beheira matched to kitchens in New Cairo. Collection requires every control to pass.</p></div><div className="route-line" aria-label="Route from Beheira to New Cairo"><span><i /><small>Beheira</small></span><b><span>146 km</span></b><span><i /><small>New Cairo</small></span></div><button className="light-button" onClick={() => setActiveView("diagnostics")}>Open controls <Icon name="arrow" size={16} /></button></section>
+        <section className="metric-grid" aria-label="Pilot metrics"><article><div className="metric-icon green"><Icon name="link" /></div><div><span>Matched demand</span><strong>{pipelineKg.toLocaleString()} kg</strong><small>Demo pipeline</small></div></article><article><div className="metric-icon orange"><Icon name="truck" /></div><div><span>Orders moving</span><strong>3</strong><small>Simulated handoffs</small></div></article><article><div className="metric-icon red"><Icon name="calculator" /></div><div><span>Contribution</span><strong>EGP {tomatoPilotEconomics.contributionPerDeliveredKg.toFixed(2)}/kg</strong><small>{tomatoPilotEconomics.contributionMarginPct.toFixed(1)}% after all variable costs</small></div></article><article><div className="metric-icon olive"><Icon name="leaf" /></div><div><span>Produce redirected</span><strong>4.7 t</strong><small>Demo pilot total</small></div></article></section>
         <section className="dashboard-grid"><div className="demand-panel panel"><div className="panel-header"><div><span className="eyebrow">Demand first</span><h2>Requests needing action</h2></div><button className="text-button" onClick={() => setActiveView("demand")}>View board <Icon name="arrow" size={15} /></button></div><div className="demand-list">{demands.slice(0, 3).map((demand) => <DemandRow key={demand.id} demand={demand} />)}</div></div>
-          <aside className="control-panel panel"><div className="panel-header compact"><div><span className="eyebrow">Operator view</span><h2>Pilot control tower</h2></div></div><ol className="checkpoint-list"><li className="done"><span><Icon name="check" size={14} /></span><div><strong>Demand confirmed</strong><small>3 buyers · 3,500 kg</small></div></li><li className="done"><span><Icon name="check" size={14} /></span><div><strong>Supplier lot inspected</strong><small>Grade + photos logged</small></div></li><li className="current"><span>3</span><div><strong>Approve landed margin</strong><small>Decision due by 1:30 PM</small></div></li><li><span>4</span><div><strong>Release collection</strong><small>Driver waiting</small></div></li></ol><div className="economics-card"><div className="economics-head"><span>Order economics</span><strong>1,200 kg</strong></div><dl><div><dt>Buy price</dt><dd>EGP 6.80</dd></div><div><dt>Sorting + crates</dt><dd>EGP 0.55</dd></div><div><dt>Delivery</dt><dd>EGP 0.92</dd></div><div><dt>Loss allowance · 4%</dt><dd>EGP 0.29</dd></div><div className="total"><dt>Landed cost</dt><dd>EGP 8.56/kg</dd></div></dl><div className="margin-result"><span>Expected gross profit</span><strong>EGP 1,128</strong></div><button className="approve-button" onClick={() => setNotice("Margin approved. Collection can now be released.")}><Icon name="check" />Approve margin</button></div></aside>
+          <aside className="control-panel panel"><div className="panel-header compact"><div><span className="eyebrow">Operator view</span><h2>Pilot control tower</h2></div></div><ol className="checkpoint-list"><li className="done"><span><Icon name="check" size={14} /></span><div><strong>Demand confirmed</strong><small>3 buyers · 3,500 kg</small></div></li><li className="done"><span><Icon name="check" size={14} /></span><div><strong>Supplier lot inspected</strong><small>Grade + photos logged</small></div></li><li className="current"><span>3</span><div><strong>Approve contribution</strong><small>Minimum EGP 1/kg and 10%</small></div></li><li><span>4</span><div><strong>Release collection</strong><small>Deposit and evidence required</small></div></li></ol><div className="economics-card"><div className="economics-head"><span>Transparent economics</span><strong>{tomatoPilotEconomics.deliveredKg.toLocaleString()} kg delivered</strong></div><dl><div><dt>Purchase {Math.round(tomatoPilotEconomics.purchasedKg).toLocaleString()} kg</dt><dd>EGP {Math.round(tomatoPilotEconomics.purchaseCost).toLocaleString()}</dd></div><div><dt>Transport</dt><dd>EGP {Math.round(tomatoPilotEconomics.transportCost).toLocaleString()}</dd></div><div><dt>Crates + handling</dt><dd>EGP {Math.round(tomatoPilotEconomics.handlingCost).toLocaleString()}</dd></div><div><dt>Inspection + loading</dt><dd>EGP {Math.round(tomatoPilotEconomics.inspectionCost).toLocaleString()}</dd></div><div><dt>Claims reserve</dt><dd>EGP {Math.round(tomatoPilotEconomics.claimsReserve).toLocaleString()}</dd></div><div className="total"><dt>Total variable cost</dt><dd>EGP {Math.round(tomatoPilotEconomics.totalVariableCost).toLocaleString()}</dd></div></dl><div className="margin-result"><span>Contribution after all listed costs</span><strong>EGP {Math.round(tomatoPilotEconomics.contribution).toLocaleString()} · {tomatoPilotEconomics.contributionMarginPct.toFixed(1)}%</strong></div><button className="approve-button" onClick={() => setNotice("Economics pass. Collection still requires the buyer deposit and operational evidence.")}><Icon name="check" />Approve contribution</button></div></aside>
         </section>
         {activeView === "demand" && <section className="view-page">
-          <div className="view-toolbar panel"><div><span className="eyebrow">Buyer-led sourcing</span><h2>Demand board</h2><p>{demands.length} confirmed requests · {pipelineKg.toLocaleString()} kg in the active pipeline</p></div><div className="toolbar-actions"><button className="filter-chip active">All demand</button><button className="filter-chip">Needs match</button><button className="filter-chip">Matched</button><button className="primary-button" onClick={() => setDemandOpen(true)}><Icon name="plus" />New request</button></div></div>
-          <div className="board-panel panel"><div className="board-head"><span>Request</span><span>Quantity & ceiling</span><span>Match quality</span><span>Action</span></div><div className="demand-list full-list">{demands.map((demand) => <DemandRow key={demand.id} demand={demand} />)}</div></div>
+          <div className="view-toolbar panel"><div><span className="eyebrow">Buyer-led sourcing</span><h2>Demand board</h2><p>{demands.length} confirmed requests · {pipelineKg.toLocaleString()} kg in the active pipeline</p></div><div className="toolbar-actions"><button className={`filter-chip ${demandFilter === "all" ? "active" : ""}`} onClick={() => setDemandFilter("all")}>All demand</button><button className={`filter-chip ${demandFilter === "needs-match" ? "active" : ""}`} onClick={() => setDemandFilter("needs-match")}>Needs match</button><button className={`filter-chip ${demandFilter === "matched" ? "active" : ""}`} onClick={() => setDemandFilter("matched")}>Matched</button><button className="primary-button" onClick={() => setDemandOpen(true)}><Icon name="plus" />New request</button></div></div>
+          <div className="board-panel panel"><div className="board-head"><span>Request</span><span>Quantity & ceiling</span><span>Match quality</span><span>Action</span></div><div className="demand-list full-list">{visibleDemands.map((demand) => <DemandRow key={demand.id} demand={demand} />)}</div></div>
           <div className="pilot-rule"><Icon name="check" /><div><strong>The demand-first rule</strong><p>A request only enters sourcing after the buyer confirms crop, accepted use, delivery window, quantity, and maximum landed price.</p></div></div>
         </section>}
         {activeView === "matches" && <section className="view-page">
-          <div className="view-toolbar panel"><div><span className="eyebrow">Verified supply only</span><h2>Recommended matches</h2><p>Three lots scored against confirmed demand, route, quality, and landed cost.</p></div><button className="secondary-button">Adjust match rules</button></div>
-          <div className="match-grid">{supplyMatches.map((lot) => <article className="supply-card panel" key={lot.id}>
+          <div className="view-toolbar panel"><div><span className="eyebrow">Verified supply only</span><h2>Recommended matches</h2><p>Three lots scored against confirmed demand, route, quality, and complete landed cost.</p></div><button className="secondary-button" onClick={() => setActiveView("diagnostics")}>View operating rules</button></div>
+          <div className="match-grid">{supplyMatches.map((lot) => { const decision = lotDecision(lot); return <article className="supply-card panel" key={lot.id}>
             <div className="supply-top"><div className={`produce-mark ${lot.crop.includes("tomato") ? "tomato" : lot.crop.includes("orange") ? "orange" : "potato"}`}><span /></div><div><span className="verified"><Icon name="check" size={12} /> Verified supplier</span><h3>{lot.supplier}</h3><p>{lot.origin}</p></div><div className="score-badge"><strong>{lot.match}%</strong><span>match</span></div></div>
             <div className="supply-crop"><span>{lot.crop}</span><strong>{lot.quantity.toLocaleString()} kg available</strong></div>
             <dl className="lot-facts"><div><dt>Usable yield</dt><dd>{lot.usable}%</dd></div><div><dt>Farm-gate price</dt><dd>EGP {lot.price.toFixed(2)}/kg</dd></div><div><dt>Pickup window</dt><dd>{lot.pickup}</dd></div></dl>
-            <div className="landed-preview"><span>Estimated landed cost</span><strong>EGP {(lot.price + 1.76).toFixed(2)}/kg</strong></div>
-            <button className="approve-button" disabled={acceptedLots.includes(lot.id)} onClick={() => acceptMatch(lot.id, lot.supplier)}>{acceptedLots.includes(lot.id) ? <><Icon name="check" />Lot reserved</> : <>Review & reserve <Icon name="arrow" /></>}</button>
-          </article>)}</div>
+            <div className="landed-preview"><span>Complete landed cost</span><strong>EGP {decision.economics.landedCostPerDeliveredKg.toFixed(2)}/kg</strong></div>
+            <div className={`margin-check ${decision.rules.approved ? "pass" : "block"}`}><span>{decision.rules.approved ? "Passes rules" : "Blocked"}</span><strong>{decision.economics.contributionPerDeliveredKg >= 0 ? "+" : ""}{decision.economics.contributionPerDeliveredKg.toFixed(2)} EGP/kg · {decision.economics.contributionMarginPct.toFixed(1)}%</strong></div>
+            <button className="approve-button" disabled={acceptedLots.includes(lot.id) || !decision.rules.approved} onClick={() => acceptMatch(lot.id, lot.supplier)}>{acceptedLots.includes(lot.id) ? <><Icon name="check" />Lot reserved</> : !decision.rules.approved ? <>Below economic rule</> : <>Review & reserve <Icon name="arrow" /></>}</button>
+          </article>; })}</div>
         </section>}
         {activeView === "orders" && <section className="view-page">
           <div className="view-toolbar panel"><div><span className="eyebrow">Transaction record</span><h2>Orders & handoffs</h2><p>Each order keeps quality, route, acceptance, and payment in one evidence trail.</p></div><div className="toolbar-actions"><button className="filter-chip active">Active</button><button className="filter-chip">Completed</button></div></div>
@@ -119,6 +185,24 @@ export default function ReHarvestApp() {
             <article className="order-row"><span className="order-state blue"><Icon name="check" /></span><div><span className="eyebrow">RH-1248</span><h3>Juice oranges · 800 kg</h3><p>Nile Citrus Growers → The Daily Press</p></div><div className="order-status"><strong>Quality accepted</strong><span>Payment due 12 Aug</span></div><button className="icon-button"><Icon name="arrow" /></button></article>
             <article className="order-row"><span className="order-state olive"><Icon name="check" /></span><div><span className="eyebrow">RH-1243</span><h3>Kitchen potatoes · 1,500 kg</h3><p>Delta Harvest → Table Nine Catering</p></div><div className="order-status"><strong>Delivered</strong><span>4.2% sorting loss</span></div><button className="icon-button"><Icon name="arrow" /></button></article>
           </div><aside className="evidence-panel panel"><span className="eyebrow">Required evidence</span><h2>Close the loop</h2><ol><li className="done"><span><Icon name="check" size={13} /></span><div><strong>Supplier lot photos</strong><small>4 files logged</small></div></li><li className="done"><span><Icon name="check" size={13} /></span><div><strong>Loaded weight</strong><small>Scale slip logged</small></div></li><li className="current"><span>3</span><div><strong>Buyer acceptance</strong><small>Due after delivery</small></div></li><li><span>4</span><div><strong>Final loss & margin</strong><small>Close after payment</small></div></li></ol><button className="secondary-button">Open order evidence</button></aside></div>
+        </section>}
+        {activeView === "diagnostics" && <section className="view-page diagnostics-page">
+          <div className="view-toolbar panel"><div><span className="eyebrow">Reproducible stress test</span><h2>{diagnostics.scenarioCount.toLocaleString()} operating possibilities</h2><p>Seed {diagnostics.seed} · assumptions are stress inputs, not market forecasts.</p></div><span className="diagnostic-badge"><Icon name="shield" size={16} /> Controls modelled</span></div>
+          <div className="diagnostic-metrics">
+            <article className="panel"><span>Loss-making outcomes</span><strong>{diagnostics.protected.probabilityOfLossPct.toFixed(2)}%</strong><small>With deposits and backup workflows</small></article>
+            <article className="panel"><span>Median contribution</span><strong>EGP {diagnostics.protected.medianContributionPerKg.toFixed(2)}/kg</strong><small>{diagnostics.protected.medianContributionMarginPct.toFixed(2)}% median margin</small></article>
+            <article className="panel"><span>5th-percentile downside</span><strong>EGP {diagnostics.protected.p05ContributionEgp.toLocaleString()}</strong><small>Bad but non-worst stress outcome</small></article>
+            <article className="panel"><span>Controls improve downside</span><strong>EGP {diagnostics.controlImpact.p05ContributionImprovementEgp.toLocaleString()}</strong><small>Protected vs. unprotected P5</small></article>
+          </div>
+          <div className="diagnostic-grid">
+            <section className="panel outcome-panel"><div className="panel-header"><div><span className="eyebrow">Outcome distribution</span><h2>What the 100,000 runs produced</h2></div></div>{Object.entries(diagnostics.protected.categories).map(([key, value]) => <div className="outcome-row" key={key}><span>{key === "severeLoss" ? "Severe loss" : key.charAt(0).toUpperCase() + key.slice(1)}</span><div><i style={{ width: `${value.pct}%` }} /></div><strong>{value.pct.toFixed(2)}%</strong></div>)}<p className="model-note">A 24.26% modelled loss rate does not predict that one in four real orders will fail. It shows the current baseline is fragile across the deliberately wide stress ranges and must be protected by real pilot data.</p></section>
+            <section className="panel risk-impact-panel"><div className="panel-header"><div><span className="eyebrow">Average impact when triggered</span><h2>Largest financial shocks</h2></div></div>{Object.entries(diagnostics.eventImpactProtected).sort(([, a], [, b]) => a.estimatedImpactEgp - b.estimatedImpactEgp).slice(0, 5).map(([key, value]) => <div className="impact-row" key={key}><span>{humanizeDiagnosticKey(key)}</span><strong>EGP {Math.round(value.estimatedImpactEgp).toLocaleString()}</strong></div>)}</section>
+          </div>
+          <div className="diagnostic-grid rules-grid">
+            <section className="panel rules-panel"><div className="panel-header"><div><span className="eyebrow">Hard operating gates</span><h2>Rules the system should enforce</h2></div></div><ol>{operatingRules.map((rule, index) => <li key={rule}><span>{index + 1}</span><p>{rule}</p></li>)}</ol></section>
+            <section className="panel assumptions-panel"><div className="panel-header"><div><span className="eyebrow">Current pilot thresholds</span><h2>Automatic economic blocks</h2></div></div><dl><div><dt>Minimum contribution</dt><dd>EGP {PILOT_GUARDRAILS.minimumContributionPerKg.toFixed(2)}/kg</dd></div><div><dt>Minimum contribution margin</dt><dd>{PILOT_GUARDRAILS.minimumContributionMarginPct.toFixed(1)}%</dd></div><div><dt>Maximum sorting loss</dt><dd>{PILOT_GUARDRAILS.maximumSortingLossPct.toFixed(1)}%</dd></div><div><dt>Buyer deposit</dt><dd>30% before reservation</dd></div><div><dt>Baseline break-even</dt><dd>EGP {tomatoPilotEconomics.breakEvenBuyerPricePerKg.toFixed(2)}/kg</dd></div></dl><div className="danger-note"><Icon name="shield" /><p><strong>Never call unsafe produce “Grade B.”</strong><span>Cosmetic imperfection is acceptable; spoiled or unsafe produce is not.</span></p></div></section>
+          </div>
+          <section className="panel integrations-panel"><div className="panel-header"><div><span className="eyebrow">Integration roadmap</span><h2>What should connect to the website</h2></div></div><div className="integration-grid">{integrationRoadmap.map((item) => <article key={item.name}><span>{item.phase}</span><h3>{item.name}</h3><p>{item.use}</p></article>)}</div></section>
         </section>}
       </div>
     </section>

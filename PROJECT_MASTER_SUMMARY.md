@@ -78,6 +78,10 @@ Displays verified demonstration lots, supplier, origin, crop, quantity, usable y
 
 Demonstrates reserved, in-transit, accepted, and delivered records, together with required evidence such as lot photographs, loaded weight, buyer acceptance, and final loss and margin.
 
+### Diagnostics
+
+Displays a reproducible 100,000-scenario stress test, protected outcome distribution, largest financial shocks, automatic operating gates, and the staged integration roadmap. The event rates are illustrative assumptions for control design, not forecasts of actual Egyptian market performance.
+
 ### Design
 
 The design uses a warm limestone background, deep produce-green navigation, editorial typography, rounded operational cards, and responsive desktop/mobile layouts. It is intentionally an agricultural operations product, not a consumer grocery app or generic finance dashboard.
@@ -105,7 +109,7 @@ Payments, transport tracking, notifications, and quality verification must remai
 
 ## 8. Correct unit economics
 
-The current dashboard's `EGP 8.40/kg projected spread` is demonstration data and is not economically consistent with a buyer ceiling near EGP 9.50/kg. It must be replaced by a transparent cost stack.
+The earlier `EGP 8.40/kg projected spread` was not economically consistent with a buyer ceiling near EGP 9.50/kg. It has been replaced throughout the dashboard and matching workflow by a shared, tested cost engine.
 
 Illustrative pilot assumptions, not verified market quotations:
 
@@ -140,6 +144,20 @@ Required purchase quantity:
 At EGP 25,000 of lean monthly fixed operating expenses, illustrative break-even is about 14,400 delivered kg per month. That is roughly 4.1 routes of 3,500 kg; operationally, at least five successful routes would be safer.
 
 Every order must calculate revenue, required purchase weight, supplier cost, sorting loss, transport, crates, handling, inspection, payment cost, claims/bad-debt reserve, diversion cost, contribution, contribution/kg, and contribution margin.
+
+### 100,000-scenario stress test
+
+The repository now contains a deterministic Monte Carlo stress test using seed `20260813`. It samples broad ranges for quantity, buyer price, supplier price, sorting loss, transport, and seven disruption events. These inputs are deliberately conservative operating hypotheses, not measured probabilities or financial forecasts.
+
+With the modelled controls (30% deposit, backup sourcing/buyers, inspection, and backup transport), the 100,000 runs produced:
+
+- 24.26% loss-making outcomes, including 4.24% severe-loss outcomes
+- EGP 1,176 median contribution per order and EGP 0.79 median contribution per delivered kg
+- EGP -2,555 at the 5th percentile, versus EGP -9,413 without the controls
+- EGP 821 higher average contribution and EGP 6,858 better 5th-percentile downside than the unprotected model
+- Food-safety incidents and payment defaults as the largest single-event financial shocks
+
+The result is not "the business has a 24.26% real-world failure probability." It means the model remains fragile across wide input ranges, so real pilot observations must replace the illustrative assumptions before scale decisions.
 
 ## 9. The most important real-life failures
 
@@ -213,7 +231,7 @@ Credit risk is especially dangerous. One unpaid 1,000 kg order at EGP 9.50/kg cr
 
 ### Product and technology
 
-- The current interface is a simulation with local state.
+- The current interface is a simulation with local state, although its economics and guardrails are now tested.
 - Incorrect economics could drive loss-making decisions.
 - Weak permissions or audit logs could allow disputes or fraud.
 - Evidence files, personal data, and payment information require secure handling.
@@ -262,7 +280,7 @@ Do not expand because people compliment the idea. Expand only because buyers reo
 ### Phase 1 — Operational pilot
 
 - Keep the current operator interface.
-- Correct the economics display.
+- Use the corrected shared economics engine and enforced pilot guardrails.
 - Use a controlled spreadsheet/WhatsApp fallback.
 - Test one tomato corridor with real quotations and small orders.
 
@@ -292,14 +310,17 @@ Do not expand because people compliment the idea. Expand only because buyers reo
 
 ## 15. Current repository and references
 
-- Production pilot: https://reharvest-egypt.omar273hf.chatgpt.site
+- Private production pilot: https://reharvest-egypt.omar273hf.chatgpt.site
 - Editable Figma: https://www.figma.com/design/z82wgMrOptytqxw4nm9Ds1
 - GitHub: private repository `abdullahomariko-arch/reharvest-egypt`
 - Main interface: `app/reharvest-app.tsx`
 - Main styling: `app/globals.css`
+- Economics engine: `lib/economics.ts`
+- Stress-test runner: `scripts/run-risk-simulation.ts`
+- Aggregate diagnostic results: `diagnostics/monte-carlo-results.json`
 - Product overview and setup: `README.md`
 
-The repository currently represents a polished decision prototype. Its purpose is to prove the transaction workflow and operating model. It is not yet safe to accept live orders, real payments, or legally binding quality evidence.
+The repository currently represents a tested decision prototype. It passes type checking, linting, production build validation, eight automated tests, and a production-dependency security audit with zero known vulnerabilities at the time of this report. It is not yet safe to accept live orders, real payments, or legally binding quality evidence because storage, identity, evidence, settlement, and compliance workflows are still unconfigured.
 
 ## 16. Final judgment
 
