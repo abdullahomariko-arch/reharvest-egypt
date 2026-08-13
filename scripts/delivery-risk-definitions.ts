@@ -1,0 +1,586 @@
+export type DeliveryRisk = {
+  id: string;
+  domain: string;
+  stage: string;
+  context: string;
+  scenario: string;
+  consequence: string;
+  prevention: string;
+  detection: string;
+  fallback: string;
+  appControl: string;
+  requiredEvidence: string;
+  owner: string;
+  severity: "Moderate" | "High" | "Critical";
+  priorityScore: number;
+  blockDispatch: boolean;
+};
+
+type DomainDefinition = {
+  domain: string;
+  stage: string;
+  owner: string;
+  consequence: string;
+  prevention: string;
+  detection: string;
+  fallback: string;
+  appControl: string;
+  evidence: string;
+  severity: DeliveryRisk["severity"];
+  blockDispatch: boolean;
+  hazards: string[];
+};
+
+const contexts = [
+  {
+    id: "DAWN",
+    label: "Pre-dawn pickup",
+    condition: "During a pre-dawn pickup with reduced staffing and low visibility",
+    extraControl: "Require an evening reconfirmation plus a wake-up and gate-access check 60 minutes before departure.",
+    score: 1,
+  },
+  {
+    id: "HEAT",
+    label: "Midday heat",
+    condition: "During midday heat and heavy Cairo traffic",
+    extraControl: "Shorten the evidence-expiry window and require heat, shade, water, and route-buffer checks.",
+    score: 2,
+  },
+  {
+    id: "OFFLINE",
+    label: "Weak network",
+    condition: "At a rural pickup with weak mobile coverage",
+    extraControl: "Cache the route packet, contacts, order summary, and evidence checklist for offline use before dispatch.",
+    score: 1,
+  },
+  {
+    id: "VOLUME",
+    label: "High-volume route",
+    condition: "On a high-volume, multi-stop route with tight delivery windows",
+    extraControl: "Recalculate capacity, stop sequence, reserve time, and recovery options whenever one stop changes.",
+    score: 2,
+  },
+  {
+    id: "CHANGE",
+    label: "Last-minute change",
+    condition: "After a last-minute supplier, buyer, driver, vehicle, or route change",
+    extraControl: "Invalidate the previous release and require the affected checks and evidence to be approved again.",
+    score: 2,
+  },
+] as const;
+
+const domains: DomainDefinition[] = [
+  {
+    domain: "Fuel and range", stage: "Pre-dispatch", owner: "Carrier dispatcher", severity: "Critical", blockDispatch: true,
+    consequence: "The truck can stop before pickup or delivery, causing delay, heat exposure, diversion cost, and possible rejection.",
+    prevention: "Calculate route distance plus detours and require enough usable fuel for the route with at least a 25% reserve.",
+    detection: "Compare a current dashboard photo, odometer, fuel receipt, route distance, and declared vehicle consumption.",
+    fallback: "Send a fuel-approved backup truck or a mobile fuel response before cargo is loaded; never improvise after the load is stranded.",
+    appControl: "A fuel-range gate blocks route release unless the primary and two backup trucks each have fresh fuel evidence and sufficient range.",
+    evidence: "Timestamped fuel gauge and odometer photos, last receipt, planned kilometres, reserve calculation, backup confirmations.",
+    hazards: [
+      "the primary truck arrives with less fuel than the planned route and reserve require",
+      "the fuel gauge is faulty or the dashboard photo is stale",
+      "the fuel card or payment method is rejected at the station",
+      "the planned fuel station is closed, empty, unsafe, or inaccessible",
+      "the driver fills the wrong fuel or uses contaminated fuel",
+      "a tank, cap, hose, or fuel line leaks after dispatch",
+      "long idling, refrigeration, or traffic consumes the expected reserve",
+      "the backup truck is listed but has the same fuel shortage as the primary",
+    ],
+  },
+  {
+    domain: "Engine and electrical", stage: "Pre-dispatch / in transit", owner: "Carrier maintenance lead", severity: "Critical", blockDispatch: true,
+    consequence: "A mechanical stop can strand the cargo, increase deterioration, and force an unsafe roadside transfer.",
+    prevention: "Use a vehicle-specific pre-trip checklist and maintenance expiry; defects affecting safe operation must close before release.",
+    detection: "Require current engine-running video, warning-light photo, fluids, battery voltage, leak check, and recent maintenance record.",
+    fallback: "Dispatch a verified backup and use a documented cargo-transfer protocol with time, weights, seal, and condition evidence.",
+    appControl: "Vehicle readiness expires before each route and blocks release for unresolved engine, cooling, battery, electrical, or leak defects.",
+    evidence: "Pre-trip inspection, maintenance date, engine video, dashboard, fluid levels, leak photos, technician sign-off.",
+    hazards: [
+      "the engine overheats under load or in traffic",
+      "the battery is flat when the driver attempts to depart",
+      "the alternator stops charging during the route",
+      "the starter motor fails after a pickup or delivery stop",
+      "coolant is low or a coolant hose bursts",
+      "a belt, hose, fan, or pump fails under load",
+      "the driver ignores a warning light, smell, noise, or leak",
+      "a previously reported maintenance defect was marked complete without repair",
+    ],
+  },
+  {
+    domain: "Tires and wheels", stage: "Pre-dispatch / in transit", owner: "Carrier maintenance lead", severity: "Critical", blockDispatch: true,
+    consequence: "A tire or wheel failure can cause a crash, prolonged delay, cargo damage, or loss of the vehicle.",
+    prevention: "Inspect pressure, tread, sidewalls, wheel fasteners, load rating, spare, jack, and tools before every route.",
+    detection: "Capture tire photos and pressure values tied to the vehicle and route; flag repeated pressure loss.",
+    fallback: "Use roadside assistance or a verified backup vehicle and keep cargo transfer off an unsafe road shoulder.",
+    appControl: "A tire-and-tools checklist blocks dispatch when any required wheel, spare, jack, or load-rating evidence is missing.",
+    evidence: "Four-wheel photos, tire pressure, tread condition, spare condition, jack/tools, wheel-nut inspection.",
+    hazards: [
+      "one or more tires start below safe pressure",
+      "a tire punctures on a road with no safe stopping place",
+      "the spare tire is missing, flat, damaged, or the wrong size",
+      "the jack, wheel wrench, or security key is missing",
+      "wheel nuts are loose, damaged, or recently fitted without recheck",
+      "heat and overload cause tire pressure or sidewall failure",
+      "the tire load rating is below the loaded axle requirement",
+      "paired tires differ in size, pressure, or wear and fail under load",
+    ],
+  },
+  {
+    domain: "Brakes, steering and visibility", stage: "Pre-dispatch / in transit", owner: "Carrier maintenance lead", severity: "Critical", blockDispatch: true,
+    consequence: "Loss of braking, steering, lighting, or visibility can injure people and destroy cargo and equipment.",
+    prevention: "Require safety-system inspection and prohibit route release when a brake, steering, light, mirror, horn, or wiper defect exists.",
+    detection: "Use a signed pre-trip test with photos or video and compare open defects from the prior route.",
+    fallback: "Keep the vehicle parked, replace it, and escalate the defect to qualified maintenance; never waive a safety-critical item.",
+    appControl: "Safety-critical defects are non-overridable dispatch blocks and remain attached to the vehicle until verified closed.",
+    evidence: "Brake and parking-brake test, steering play, lights, indicators, reflectors, mirrors, horn, wipers, defect closure.",
+    hazards: [
+      "service brakes fade, pull, leak, or do not stop the loaded vehicle normally",
+      "air, hydraulic, or brake warning pressure is abnormal",
+      "the parking brake cannot hold the loaded vehicle on a slope",
+      "steering has excessive play, vibration, or a damaged component",
+      "headlights, brake lights, or reflectors fail during darkness",
+      "turn indicators or hazard lights do not work",
+      "wipers or washers fail in rain, dust, or mud",
+      "mirrors, horn, or visibility are inadequate for reversing and narrow access",
+    ],
+  },
+  {
+    domain: "Cargo bay hygiene", stage: "Pre-loading", owner: "Quality inspector", severity: "Critical", blockDispatch: true,
+    consequence: "The produce can be contaminated, tainted, rejected, or implicated in a food-safety complaint.",
+    prevention: "Declare previous cargo, clean and dry the load area, isolate chemicals, inspect pests and odours, and approve the bay before loading.",
+    detection: "Use current interior photographs, previous-cargo declaration, cleaning record, odour/pest check, and inspector sign-off.",
+    fallback: "Reject the vehicle, reclean and reinspect, or use a clean backup; quarantine anything already exposed.",
+    appControl: "The cargo-bay hygiene gate cannot pass without traceable cleaning evidence and a compatible previous-cargo declaration.",
+    evidence: "Interior photos, cleaning time and method, previous cargo, pest/odour result, inspector identity.",
+    hazards: [
+      "chemical, fuel, fertilizer, pesticide, or detergent residue remains in the cargo bay",
+      "soil, spoiled produce, glass, metal, or waste remains on the floor",
+      "insects, rodents, droppings, nests, or pest damage are present",
+      "strong odours from previous cargo can taint the produce",
+      "standing water, mud, or cleaning solution remains before loading",
+      "the cleaning certificate is missing, copied, or belongs to another vehicle",
+      "a liner, wall, drain, roof, or floor is torn and cannot be cleaned effectively",
+      "the vehicle carried an incompatible or unknown previous load",
+    ],
+  },
+  {
+    domain: "Capacity and load securement", stage: "Planning / loading", owner: "Dispatcher and loader", severity: "Critical", blockDispatch: true,
+    consequence: "Overload, poor balance, or moving cargo can damage produce, destabilize the truck, or breach road restrictions.",
+    prevention: "Calculate usable payload, crate count, volume, axle distribution, stack pattern, and securement before assigning the vehicle.",
+    detection: "Compare planned and actual loaded weight, dimensions, crate count, axle position, strap plan, and door closure.",
+    fallback: "Split the load across verified vehicles, reduce quantity with buyer approval, or replace the vehicle before departure.",
+    appControl: "The load planner rejects vehicles below capacity and blocks release when actual weight, crate count, or securement differs from plan.",
+    evidence: "Vehicle payload, dimensions, scale slip, crate manifest, loading diagram, straps, doors, seals, departure photos.",
+    hazards: [
+      "the assigned payload is below the purchased produce and packaging weight",
+      "the declared vehicle capacity is wrong or includes unusable space",
+      "the load shifts during braking, turning, or rough roads",
+      "crate stacks are too high and crush the lower produce",
+      "straps, bars, nets, dunnage, or anti-slip material are missing",
+      "weight is concentrated on one axle or side of the vehicle",
+      "vehicle height, width, or turning radius cannot use the planned access",
+      "doors, tailgate, curtain, or seals cannot hold or protect the load",
+    ],
+  },
+  {
+    domain: "Driver availability and fitness", stage: "Planning / pre-dispatch", owner: "Carrier dispatcher", severity: "Critical", blockDispatch: true,
+    consequence: "A missing or unfit driver can cancel the route or create an accident and poor handling risk.",
+    prevention: "Confirm a primary and backup driver, fitness-to-drive, rest, hydration, medication disclosure, and contactability before release.",
+    detection: "Require timed acknowledgements, arrival check, self-declaration, and dispatcher call when a response is missed.",
+    fallback: "Activate a pre-verified backup driver without changing the vehicle release evidence or exceeding working limits.",
+    appControl: "Driver confirmation expires before dispatch; no-show, fatigue, illness, or missed acknowledgement activates the backup workflow.",
+    evidence: "Primary and backup confirmations, check-in times, licence status, fitness declaration, emergency contact held securely.",
+    hazards: [
+      "the primary driver does not arrive or stops answering",
+      "the driver becomes ill before or during the route",
+      "the driver is fatigued from another shift or insufficient rest",
+      "the driver oversleeps or misunderstands the departure time",
+      "a family or personal emergency removes the driver unexpectedly",
+      "medication, dehydration, hunger, or heat affects safe driving",
+      "the driver has no planned rest, water, food, or toilet access",
+      "a substitute driver is appointed too late to verify fitness and competence",
+    ],
+  },
+  {
+    domain: "Driver qualification and behaviour", stage: "Onboarding / in transit", owner: "Carrier manager", severity: "Critical", blockDispatch: true,
+    consequence: "An unqualified or unsafe driver can cause crashes, delays, bribery exposure, disputes, theft, and reputational harm.",
+    prevention: "Verify licence, vehicle class, training, route competence, safe-driving agreement, incident history, and conduct expectations.",
+    detection: "Use document expiry alerts, route exceptions, speed/stop anomalies where lawful, and incident or complaint review.",
+    fallback: "Suspend the driver, protect people and cargo, activate a verified replacement, and preserve the audit trail.",
+    appControl: "Expired documents and unresolved serious conduct events automatically block assignment to a vehicle or route.",
+    evidence: "Licence and class, expiry, training, policy acknowledgement, route briefing, incident and complaint history.",
+    hazards: [
+      "the driver's licence is expired, suspended, false, or unreadable",
+      "the driver is not qualified for the assigned vehicle class or load",
+      "the driver is unfamiliar with the vehicle, route, cargo, or handoff procedure",
+      "the driver speeds, tailgates, or drives aggressively to recover delay",
+      "the driver uses a phone, app, or messages while the vehicle is moving",
+      "the driver skips checks or enters false confirmations to depart faster",
+      "the driver makes an unauthorized cash, fuel, passenger, or personal detour",
+      "the driver argues with, threatens, or mishandles the supplier, buyer, or public",
+    ],
+  },
+  {
+    domain: "Carrier redundancy", stage: "Planning / recovery", owner: "Logistics coordinator", severity: "Critical", blockDispatch: true,
+    consequence: "A single failed truck, driver, depot, or contractor can cancel the entire delivery with no recoverable option.",
+    prevention: "Register a primary and at least two independently verified backup truck-driver pairs with capacity, fuel, hygiene, and response times.",
+    detection: "Reconfirm every backup for the exact window and detect shared depot, driver, fuel, ownership, or geographic dependencies.",
+    fallback: "Escalate in order of verified response time and capacity, then split the load or reschedule under buyer-approved rules.",
+    appControl: "The fleet redundancy gate requires three viable truck-driver pairs and blocks backups that share the same hidden point of failure.",
+    evidence: "Vehicle and driver records, capacity, location, response time, current availability, independence check, acceptance timestamp.",
+    hazards: [
+      "no backup truck was registered for the route",
+      "all listed trucks depend on the same depot, owner, fuel source, or dispatcher",
+      "the backup vehicle cannot carry the quantity or crate dimensions",
+      "the backup vehicle or driver has never been verified",
+      "the backup vehicle exists but its driver is unavailable",
+      "the nearest backup cannot arrive before the produce deteriorates",
+      "a backup was double-booked or only verbally promised",
+      "the person on duty lacks authority or funds to activate a backup",
+    ],
+  },
+  {
+    domain: "Pickup access and timing", stage: "Before pickup", owner: "Supplier coordinator", severity: "High", blockDispatch: true,
+    consequence: "The truck can waste hours, miss the delivery window, or wait in an unsafe location while produce remains exposed.",
+    prevention: "Verify map pin, written directions, gate name, access rules, loading window, onsite contact, and waiting area before departure.",
+    detection: "Require supplier reconfirmation and driver acknowledgement; alert when the truck is not progressing to the verified pin.",
+    fallback: "Use a second contact or meeting point, hold at a safe location, or cancel before deterioration and extra waiting cost escalate.",
+    appControl: "Pickup details expire and must be reconfirmed; a missing gate contact or changed pin invalidates route release.",
+    evidence: "Verified pin, landmark directions, gate/contact, access instructions, loading slot, reconfirmation time.",
+    hazards: [
+      "the map pin points to the wrong gate, field, village, or road",
+      "the farm or market gate is locked when the truck arrives",
+      "security refuses entry because the driver, vehicle, or order is not listed",
+      "the final access road is muddy, flooded, narrow, blocked, or unsafe",
+      "the supplier changes the loading time after the truck has departed",
+      "other vehicles create an uncontrolled loading queue",
+      "the onsite contact does not answer or has left the location",
+      "the loading area has inadequate lighting, visibility, or safe manoeuvring space",
+    ],
+  },
+  {
+    domain: "Supplier readiness", stage: "Before pickup / loading", owner: "Supplier coordinator", severity: "High", blockDispatch: true,
+    consequence: "A truck may arrive for unavailable, incomplete, incorrect, or repriced produce, wasting transport and breaking buyer commitments.",
+    prevention: "Require a time-bounded supplier confirmation of lot, grade, quantity, price, readiness, labour, documents, and backup lot.",
+    detection: "Use a live readiness checklist with current photos and estimated finished weight before dispatching the vehicle.",
+    fallback: "Activate a verified backup lot, split sourcing, reduce the order with buyer approval, or cancel before transport cost is committed.",
+    appControl: "Supplier readiness expires before dispatch and material changes automatically reopen economics and buyer approval.",
+    evidence: "Lot ID, current photos, ready quantity, price, grade, labour, documents, backup lot, confirmation timestamp.",
+    hazards: [
+      "the produce is not harvested or collected when the vehicle arrives",
+      "sorting, grading, packing, or cooling is incomplete",
+      "the prepared produce is a different grade, crop, variety, or maturity",
+      "actual available quantity is below the confirmed order",
+      "the supplier changes price, payment terms, or minimum quantity at pickup",
+      "the confirmed lot was sold, moved, mixed, or promised to another buyer",
+      "loading labour, supervisor, scale operator, or inspector is absent",
+      "required supplier, lot, treatment, or traceability documents are missing",
+    ],
+  },
+  {
+    domain: "Weighing and quantity", stage: "Loading / receiving", owner: "Inspector", severity: "High", blockDispatch: true,
+    consequence: "Incorrect weight creates overpayment, shortage, overload, buyer dispute, and false economics.",
+    prevention: "Use calibrated scales, controlled tare, kilograms as the canonical unit, two-person review, and pickup/delivery comparison.",
+    detection: "Validate reasonable weight ranges, photos of displays and slips, crate counts, tare values, and duplicate or edited readings.",
+    fallback: "Reweigh on an approved scale, quarantine the disputed quantity, and keep payment blocked until reconciled.",
+    appControl: "The app stores immutable pickup and delivery weights and blocks acceptance or settlement on unexplained discrepancies.",
+    evidence: "Calibration/verification, display photo, scale slip, tare, unit, crate count, operator, pickup and delivery readings.",
+    hazards: [
+      "the pickup scale is inaccurate, damaged, tilted, or uncalibrated",
+      "power loss prevents the scale from operating or printing",
+      "kilograms, tonnes, crates, and local units are confused",
+      "vehicle, pallet, person, water, or packaging tare is entered incorrectly",
+      "a handwritten or spoken weight is transcribed incorrectly",
+      "rain, washing, soil, or water changes apparent produce weight",
+      "pickup and buyer scales disagree beyond the allowed tolerance",
+      "the scale slip is missing, unreadable, duplicated, or belongs to another load",
+    ],
+  },
+  {
+    domain: "Crates and loading", stage: "Loading", owner: "Loading supervisor", severity: "High", blockDispatch: true,
+    consequence: "Poor containers or handling can crush, contaminate, lose, or delay produce and increase sorting loss.",
+    prevention: "Reserve clean serviceable crates and loading labour; define fill height, stack pattern, airflow, handling, and loading duration.",
+    detection: "Count and inspect crates before dispatch and capture loading start/end, damage, cleanliness, and final stack photos.",
+    fallback: "Replace crates, restack, split the load, add labour, or stop loading when damage or hygiene cannot be corrected.",
+    appControl: "Crate and loading gates compare planned and actual counts and block departure for dirty, broken, overfilled, or unsecured containers.",
+    evidence: "Crate ledger, cleanliness and damage photos, loading team, start/end time, stack pattern, rejected crate count.",
+    hazards: [
+      "fewer crates arrive than the quantity and safe fill level require",
+      "crates are cracked, sharp, unstable, missing parts, or unsafe to stack",
+      "crates are dirty, wet, odorous, pest-affected, or used for chemicals",
+      "planned loading workers do not arrive or demand different terms",
+      "workers throw, drop, compress, drag, or stand on produce",
+      "loading takes long enough to miss the route or expose produce",
+      "the forklift, ramp, trolley, dock, or lifting equipment is unavailable",
+      "crates are overfilled, underfilled, mixed, or stacked without airflow",
+    ],
+  },
+  {
+    domain: "Produce condition and packaging", stage: "Inspection / transport", owner: "Quality inspector", severity: "Critical", blockDispatch: true,
+    consequence: "Heat, moisture, maturity, decay, pressure, or incompatible packing can turn usable produce into rejection or a safety problem.",
+    prevention: "Define measurable grade and condition limits, shade and ventilation rules, packaging, loading temperature, and maximum elapsed time.",
+    detection: "Use representative inspection samples, temperature where relevant, photos, defect percentages, moisture, odour, and time stamps.",
+    fallback: "Reject or re-sort before loading, divert to an approved use, reduce the accepted quantity, or quarantine unsafe produce.",
+    appControl: "Condition evidence is lot-specific and expires; unsafe findings are non-overridable while cosmetic deviations require buyer approval.",
+    evidence: "Lot sample, defect %, maturity, odour, moisture, temperature where relevant, packaging, time out of shade.",
+    hazards: [
+      "produce retains field heat or is loaded after prolonged sun exposure",
+      "produce is wet from rain, washing, condensation, or irrigation",
+      "decay, mould, pests, bruising, or internal damage is hidden in the load",
+      "maturity or ripeness is unsuitable for the buyer's intended use",
+      "the loaded produce waits in direct sun or a closed hot vehicle",
+      "airflow is blocked by liners, dense stacking, walls, or mixed packaging",
+      "incompatible crops, chemicals, allergens, odours, or dirty materials are mixed",
+      "packaging traps condensation, tears, collapses, or exposes produce to dirt",
+    ],
+  },
+  {
+    domain: "Route and navigation", stage: "Planning / in transit", owner: "Dispatcher", severity: "High", blockDispatch: true,
+    consequence: "A wrong or unsuitable route can create major delay, fuel loss, unsafe manoeuvres, missed stops, and deterioration.",
+    prevention: "Validate destination, truck restrictions, stop order, primary route, two alternatives, safe waiting points, and driver understanding.",
+    detection: "Use route acknowledgement and exception alerts when the vehicle is late, stationary, or materially off plan where lawful.",
+    fallback: "Switch to a preapproved route, contact the receiver, adjust stop sequence, or divert before the remaining shelf-life is exhausted.",
+    appControl: "Every released route packet includes offline directions, plan A/B/C, restriction notes, stop windows, and escalation contacts.",
+    evidence: "Verified addresses and pins, route alternatives, restrictions, stop order, safe stops, driver acknowledgement.",
+    hazards: [
+      "the destination name is correct but the address or branch is wrong",
+      "the planned route is outdated after a closure or access change",
+      "navigation sends the truck through a narrow, low, weak, unpaved, or unsafe road",
+      "no usable alternate route exists when the primary route closes",
+      "the driver misses an exit, turn, gate, or delivery entrance",
+      "the driver takes an unauthorized shortcut, personal stop, or familiar but slower road",
+      "the route is unsuitable for the vehicle size, weight, turning radius, or cargo",
+      "multi-stop deliveries are sequenced poorly and miss buyer windows",
+    ],
+  },
+  {
+    domain: "Traffic, roads and permits", stage: "Planning / in transit", owner: "Dispatcher", severity: "High", blockDispatch: false,
+    consequence: "External restrictions can delay, fine, stop, or reroute a truck and invalidate delivery promises.",
+    prevention: "Check traffic, closures, road works, tolls, checkpoints, vehicle restrictions, documents, and legal stopping options before release.",
+    detection: "Monitor official route conditions and driver incident codes; compare elapsed time with the risk-adjusted route plan.",
+    fallback: "Use approved alternatives, update the buyer immediately, hold safely, or activate diversion/reschedule rules.",
+    appControl: "The route release records the latest condition check and adds buffer or blocks routes when restrictions make the promise impossible.",
+    evidence: "Condition-check time, route alerts, permits/documents, toll plan, restriction notes, revised ETA acknowledgements.",
+    hazards: [
+      "a collision or emergency closes the planned road",
+      "traffic congestion consumes the delivery and produce-quality buffer",
+      "road works create an unplanned diversion or rough surface",
+      "weight, axle, height, time, or commercial-vehicle restrictions stop the truck",
+      "a police, security, agricultural, or other checkpoint causes delay",
+      "the driver lacks cash, tag balance, receipt process, or authority for a toll",
+      "vehicle registration, insurance, permit, or carried document is missing or expired",
+      "parking, unloading, access, or idling restrictions prevent delivery",
+    ],
+  },
+  {
+    domain: "Weather and environment", stage: "Planning / loading / in transit", owner: "Dispatcher and quality lead", severity: "Critical", blockDispatch: false,
+    consequence: "Heat, rain, flood, dust, wind, or unsafe conditions can damage produce, trap the vehicle, and endanger people.",
+    prevention: "Set crop- and route-specific weather thresholds, shade/cover rules, road-risk checks, water for staff, and alternate timing.",
+    detection: "Check current official forecasts and observed local conditions at supplier, route, and buyer; require driver exception reports.",
+    fallback: "Delay loading, change route/time, add protection, hold safely, divert, or cancel under predefined safety thresholds.",
+    appControl: "A weather gate applies risk-specific checklists and requires reapproval when conditions cross a threshold after release.",
+    evidence: "Forecast and observation time, temperature/rain/dust/flood alert, local confirmations, protection plan, decision owner.",
+    hazards: [
+      "extreme heat accelerates deterioration and driver fatigue",
+      "heavy rain wets produce, packaging, roads, and loading areas",
+      "flooding blocks the route or contaminates the vehicle and cargo",
+      "dust or sand reduces visibility and contaminates exposed produce",
+      "strong wind makes driving, doors, covers, crates, or loading unsafe",
+      "unexpected cold affects produce condition or vehicle operation",
+      "standing dirty water contacts crates, wheels, workers, or produce",
+      "lightning or severe weather makes open-area loading unsafe",
+    ],
+  },
+  {
+    domain: "Communication and devices", stage: "All stages", owner: "Dispatcher", severity: "High", blockDispatch: true,
+    consequence: "A preventable issue becomes a major loss when the driver, supplier, buyer, or operator cannot communicate quickly.",
+    prevention: "Require charged primary and backup phones, power banks, airtime/data, offline packet, current contacts, and timed acknowledgements.",
+    detection: "Run a communication check before departure and escalate missed heartbeats or critical acknowledgements.",
+    fallback: "Use voice/SMS/alternate network, backup contact, offline instructions, and fixed escalation times; never rely on one chat thread.",
+    appControl: "The communication gate checks device power, contact validity, offline access, and backup channel before route release.",
+    evidence: "Battery level, charger/power bank, SIM/network, primary and backup contacts, acknowledgement and escalation log.",
+    hazards: [
+      "the driver's phone battery dies during the route",
+      "the charger, cable, socket, or power bank is missing or broken",
+      "mobile data, voice service, or network coverage is unavailable",
+      "the SIM has no balance, is suspended, damaged, or belongs to another person",
+      "the driver is logged out, cannot unlock the device, or cannot use the app",
+      "supplier, buyer, dispatcher, or emergency contact details are wrong or stale",
+      "critical calls, messages, alarms, or changed instructions are ignored",
+      "language, spelling, voice note, time, unit, or location wording is misunderstood",
+    ],
+  },
+  {
+    domain: "Buyer receiving readiness", stage: "Before delivery / receiving", owner: "Buyer coordinator", severity: "High", blockDispatch: true,
+    consequence: "The truck can arrive to no receiver, no dock, no scale, changed terms, or rejection while the produce deteriorates.",
+    prevention: "Reconfirm receiver, window, gate, unloading labour, scale, accepted quantity, price, tolerance, payment, and backup receiver.",
+    detection: "Require a timed buyer acknowledgement before dispatch and again before the final leg; alert on any changed field.",
+    fallback: "Use an authorized backup receiver, safe waiting limit, partial acceptance, diversion buyer, or cancellation terms.",
+    appControl: "Buyer readiness expiry blocks the final leg and any change to quantity, price, or criteria reopens approval and economics.",
+    evidence: "Receiver and backup, window, gate/dock, labour, scale, criteria, payment status, reconfirmation timestamp.",
+    hazards: [
+      "the named receiver is absent, late, sick, or no longer employed",
+      "the buyer gate, kitchen, warehouse, branch, or delivery area is closed",
+      "the dock or unloading space is occupied and the truck must queue",
+      "the buyer reduces or cancels quantity after dispatch",
+      "the buyer's scale is unavailable, inaccurate, or controlled by an absent person",
+      "unloading labour, crates, pallets, trolley, or supervisor is unavailable",
+      "the buyer disputes the confirmed price, payment method, deposit, or terms",
+      "the buyer changes grade, defect tolerance, maturity, packaging, or intended use",
+    ],
+  },
+  {
+    domain: "Evidence, data and audit", stage: "All stages", owner: "Operator", severity: "High", blockDispatch: true,
+    consequence: "Missing or unreliable evidence makes disputes, traceability, settlement, insurance, and learning impossible.",
+    prevention: "Define mandatory evidence at every transition, validate it server-side, preserve originals, and prevent silent edits.",
+    detection: "Check timestamps, identity, location where appropriate, file quality, duplicates, reasonable values, and state sequence.",
+    fallback: "Hold the transaction, recollect evidence if safe, use a witnessed exception, and escalate rather than invent or backdate data.",
+    appControl: "Every state change requires typed evidence and an immutable audit event; missing evidence blocks the next irreversible action.",
+    evidence: "Original files, metadata, actor, timestamp, order/lot/vehicle link, before/after values, exception reason.",
+    hazards: [
+      "photos are blurred, dark, distant, cropped, obstructed, or show the wrong load",
+      "device time, date, time zone, or timestamp is incorrect",
+      "location evidence is missing, stale, spoofed, or attached to the wrong event",
+      "the same order, lot, truck, payment, or evidence is created twice",
+      "offline and online edits conflict or overwrite each other",
+      "the signature or acceptance is made by an unauthorized person",
+      "an operator changes status before the physical handoff actually occurs",
+      "a file or record is deleted, replaced, edited, or becomes unreadable after settlement",
+    ],
+  },
+  {
+    domain: "Payment, cash and fraud", stage: "Planning / settlement", owner: "Finance controller", severity: "Critical", blockDispatch: true,
+    consequence: "A small cash gap or fraudulent change can strand the route, duplicate costs, or erase several successful orders of contribution.",
+    prevention: "Preapprove route float, digital methods, payment recipients, limits, receipts, deposits, and segregation of duties.",
+    detection: "Match every payment to an approved party, amount, purpose, device/session, receipt, and reconciliation status.",
+    fallback: "Use a controlled emergency float, freeze changed bank details, block duplicate settlement, and investigate before release.",
+    appControl: "Payment and route-float gates use limits, dual approval, idempotency, verified bank details, and duplicate detection.",
+    evidence: "Approved budget, payer/payee, account verification, receipt, route expense, reconciliation, override approval.",
+    hazards: [
+      "the driver lacks approved cash or method for required fuel",
+      "the driver lacks cash, tag balance, or authority for tolls and access fees",
+      "a driver, supplier, loader, carrier, or official demands an unapproved advance or fee",
+      "the same carrier, supplier, expense, refund, or settlement is paid twice",
+      "a receipt, fuel invoice, scale slip, bank proof, or expense is false or altered",
+      "the buyer cannot pay the agreed balance at the handoff",
+      "bank, wallet, or beneficiary details change through fraud or error",
+      "cash, produce, crates, fuel, or expense reimbursements are stolen or inflated",
+    ],
+  },
+  {
+    domain: "Security and personal safety", stage: "All stages", owner: "Operations manager", severity: "Critical", blockDispatch: false,
+    consequence: "Theft, violence, injury, tampering, or unsafe stops can harm people and make the cargo untrustworthy.",
+    prevention: "Risk-assess routes and stops, minimize cash, protect contacts and cargo details, use safe waiting points, seals, and check-ins.",
+    detection: "Use missed-check-in, route exception, seal, incident, duress, and emergency escalation procedures where lawful.",
+    fallback: "Prioritize human safety, contact emergency services, stop distribution, preserve evidence, notify insurers/advisers, and quarantine cargo.",
+    appControl: "A security incident immediately locks route actions, settlement, and downstream distribution and opens a controlled response checklist.",
+    evidence: "Route risk assessment, check-ins, seal numbers, incident time/location, involved people, authorities, quarantine decision.",
+    hazards: [
+      "produce, crates, fuel, devices, cash, documents, or vehicle parts are stolen",
+      "the vehicle is stolen before, during, or after loading",
+      "cargo, seals, packaging, evidence, or documents are deliberately tampered with",
+      "the driver stops in an isolated, unsafe, illegal, or poorly lit location",
+      "a driver, loader, inspector, supplier, or receiver is harassed or threatened",
+      "a person is injured during driving, loading, unloading, lifting, or reversing",
+      "local crime, protest, conflict, crowd, or unrest makes the route unsafe",
+      "hijacking, extortion, coercion, or a duress event compromises people and cargo",
+    ],
+  },
+  {
+    domain: "Food safety and traceability", stage: "All stages", owner: "Food-safety lead", severity: "Critical", blockDispatch: true,
+    consequence: "A contaminated or untraceable load can harm people, trigger recall, destroy trust, and create severe legal and financial exposure.",
+    prevention: "Keep lot identity, source, handling, treatment, inspection, vehicle, recipients, quantities, and incident procedures linked end to end.",
+    detection: "Validate traceability completeness, hygiene and condition evidence, complaint signals, mixed lots, and safety exceptions.",
+    fallback: "Stop distribution, quarantine all linked quantities, identify recipients, preserve samples/evidence, and escalate under the approved plan.",
+    appControl: "Safety events are non-overridable locks with one-step backward and forward traceability, quarantine, recipient list, and recall workflow.",
+    evidence: "Supplier and lot, harvest/source, treatment where applicable, inspection, vehicle, weights, buyers, accepted/rejected/diverted quantities.",
+    hazards: [
+      "the lot identifier is missing, duplicated, changed, detached, or unreadable",
+      "the real farm, packing point, trader, or owner cannot be identified",
+      "biological, chemical, physical, water, soil, pest, or human contamination occurs",
+      "pesticide, treatment, residue, or withdrawal information is missing or suspicious",
+      "lots from different sources, dates, grades, or conditions are mixed without control",
+      "recipient and quantity records are incomplete so affected produce cannot be traced",
+      "a buyer or consumer alleges illness, contamination, foreign material, or unsafe handling",
+      "quarantined, rejected, recalled, or unsafe produce is accidentally released, relabelled, or sold",
+    ],
+  },
+  {
+    domain: "Emergency and diversion", stage: "Recovery", owner: "Incident commander", severity: "Critical", blockDispatch: false,
+    consequence: "Without a rehearsed recovery path, normal disruptions become cargo loss, unsafe decisions, and uncontrolled communication.",
+    prevention: "Preapprove backup buyers, holding points, vehicles, contacts, response thresholds, authority, cargo transfer, and decision time limits.",
+    detection: "Open an incident when delay, condition, failure, rejection, security, or safety thresholds are crossed.",
+    fallback: "Follow the relevant playbook, document the decision, preserve traceability, and stop when no safe/economic recovery remains.",
+    appControl: "The incident console assigns one owner, countdowns, approved options, contact acknowledgements, cargo status, and closure evidence.",
+    evidence: "Trigger, owner, timeline, options, approvals, calls, condition/weight, transfer/diversion, final disposition and costs.",
+    hazards: [
+      "the listed backup buyer was never confirmed or has no current capacity",
+      "the diversion buyer or holding point is too far for remaining produce life",
+      "no safe shaded, ventilated, hygienic, or secure holding location exists",
+      "nobody knows who owns the incident decision or has authority to spend",
+      "police, ambulance, roadside, insurance, food-safety, or legal contacts are unavailable",
+      "replacement vehicle transfer has no weight, seal, hygiene, condition, or chain-of-custody procedure",
+      "cargo becomes stranded between supplier, roadside, buyer, diversion, and settlement states",
+      "people delay the decision until recovery options and product value disappear",
+    ],
+  },
+  {
+    domain: "System, offline and integrations", stage: "All stages", owner: "Product operations", severity: "High", blockDispatch: false,
+    consequence: "Technology failure can hide instructions, duplicate actions, lose evidence, or incorrectly release or block a physical operation.",
+    prevention: "Design server-authoritative state, offline packets, idempotency, backups, health monitoring, manual continuity, and reconciliation.",
+    detection: "Monitor errors, stale data, failed webhooks, sync conflicts, unavailable storage, clock drift, and permission failures.",
+    fallback: "Use a numbered offline route packet and controlled paper/WhatsApp continuity, then reconcile through a reviewed import.",
+    appControl: "The app displays freshness and sync state, refuses stale irreversible actions, and has a documented continuity and later-reconciliation mode.",
+    evidence: "Version, sync status, device/session, request ID, webhook signature/status, offline packet number, reconciliation reviewer.",
+    hazards: [
+      "the app or hosting service is unavailable during a handoff",
+      "transactional storage is unavailable, stale, corrupted, or not configured",
+      "photo, scale slip, signature, or document upload fails",
+      "message, map, payment, or other integration webhooks are delayed, duplicated, or reordered",
+      "mapping, traffic, weather, payment, or messaging provider is unavailable",
+      "payment provider status and the order ledger disagree",
+      "device clock, server clock, time zone, or daylight assumptions create a wrong deadline",
+      "permissions wrongly block a legitimate user or allow an unauthorized action",
+    ],
+  },
+];
+
+function scoreFor(severity: DeliveryRisk["severity"], contextScore: number, hazardIndex: number) {
+  const base = severity === "Critical" ? 82 : severity === "High" ? 65 : 48;
+  return Math.min(100, base + contextScore * 4 + (hazardIndex % 4) * 2);
+}
+
+export function generateDeliveryRiskCatalog(): DeliveryRisk[] {
+  const risks: DeliveryRisk[] = [];
+  domains.forEach((domain, domainIndex) => {
+    if (domain.hazards.length !== 8) throw new Error(`${domain.domain} must define exactly eight hazards.`);
+    domain.hazards.forEach((hazard, hazardIndex) => {
+      contexts.forEach((context, contextIndex) => {
+        const numericId = domainIndex * 40 + hazardIndex * 5 + contextIndex + 1;
+        risks.push({
+          id: `DLV-${numericId.toString().padStart(4, "0")}`,
+          domain: domain.domain,
+          stage: domain.stage,
+          context: context.label,
+          scenario: `${context.condition}, ${hazard}.`,
+          consequence: domain.consequence,
+          prevention: `${domain.prevention} ${context.extraControl}`,
+          detection: domain.detection,
+          fallback: domain.fallback,
+          appControl: domain.appControl,
+          requiredEvidence: domain.evidence,
+          owner: domain.owner,
+          severity: domain.severity,
+          priorityScore: scoreFor(domain.severity, context.score, hazardIndex),
+          blockDispatch: domain.blockDispatch,
+        });
+      });
+    });
+  });
+  return risks;
+}
+
+export const deliveryRiskDomains = domains.map((domain) => domain.domain);
+export const deliveryRiskContexts = contexts.map((context) => context.label);

@@ -2,6 +2,8 @@
 
 import { FormEvent, useMemo, useState } from "react";
 import diagnostics from "../diagnostics/monte-carlo-results.json";
+import deliveryDiagnostics from "../diagnostics/delivery-resilience-results.json";
+import deliveryRiskCatalog from "../diagnostics/delivery-risk-app-catalog.json";
 import {
   calculateOrderEconomics,
   evaluateEconomicGuardrails,
@@ -20,15 +22,42 @@ const starterDemands: Demand[] = [
   { id: "DEM-1038", buyer: "Table Nine Catering", area: "6th of October", crop: "Kitchen potatoes", grade: "Kitchen grade", quantity: 1500, targetPrice: 10.25, delivery: "13 Aug · 6:30 AM", use: "Central kitchen prep", match: 63, status: "Sourcing" },
 ];
 
-const navItems = [["overview", "Overview", "home"], ["demand", "Demand board", "list"], ["matches", "Matches", "link"], ["orders", "Orders", "truck"], ["diagnostics", "Diagnostics", "shield"]] as const;
+const navItems = [["overview", "Overview", "home"], ["demand", "Demand board", "list"], ["matches", "Matches", "link"], ["orders", "Orders", "truck"], ["delivery", "Delivery", "truck"], ["diagnostics", "Diagnostics", "shield"]] as const;
 
 const viewCopy: Record<string, { title: string; description: string }> = {
   overview: { title: "Good evening, Omar.", description: "The tomato corridor has one decision waiting before tomorrow’s collection." },
   demand: { title: "Confirmed buyer demand.", description: "Buy only what a buyer has requested, at a price that protects the landed margin." },
   matches: { title: "Match usable produce.", description: "Compare verified supplier lots against quantity, grade, timing, and total landed cost." },
   orders: { title: "Protect every handoff.", description: "Track collection, quality acceptance, delivery, and payment without losing the audit trail." },
+  delivery: { title: "Release a route only when the backups are real.", description: "Two million delivery scenarios converted into evidence gates, backup capacity, and recovery playbooks." },
   diagnostics: { title: "Know the risk before collection.", description: "One hundred thousand stress scenarios translated into enforceable operating rules." },
 };
+
+const deliveryReleaseGates = [
+  { id: "fleet", label: "Primary truck plus two independent backup truck-driver pairs confirmed", critical: true, passed: true },
+  { id: "fuel-primary", label: "Primary fuel proof covers route, detour, and 25% reserve", critical: true, passed: true },
+  { id: "fuel-backup-one", label: "Backup 1 fuel, capacity, hygiene, and response evidence valid", critical: true, passed: true },
+  { id: "fuel-backup-two", label: "Backup 2 fuel, capacity, hygiene, and response evidence valid", critical: true, passed: false },
+  { id: "vehicle-safety", label: "Tires, brakes, steering, lights, mirrors, spare, jack, and tools pass", critical: true, passed: true },
+  { id: "driver", label: "All drivers confirm fitness, rest, qualification, and route understanding", critical: true, passed: true },
+  { id: "cargo", label: "Cargo bay hygiene, payload, crates, airflow, and securement pass", critical: true, passed: true },
+  { id: "supplier", label: "Supplier reconfirms exact lot, labour, gate, and loading window", critical: true, passed: true },
+  { id: "buyer", label: "Buyer receiver, dock, scale, acceptance, and diversion contact confirmed", critical: true, passed: true },
+  { id: "route", label: "Route A/B/C, restrictions, safe stops, buffer, and offline packet verified", critical: true, passed: true },
+  { id: "communications", label: "Phones, power, backup contacts, and missed-ack escalation ready", critical: false, passed: true },
+  { id: "evidence", label: "Weight, photos, signatures, traceability, and audit fields configured", critical: true, passed: true },
+  { id: "conditions", label: "Weather and security remain inside release thresholds", critical: true, passed: true },
+  { id: "payment", label: "Route float, recipients, limits, and duplicate-payment controls pass", critical: false, passed: true },
+  { id: "recovery", label: "Diversion, safe holding, incident owner, and cargo transfer confirmed", critical: true, passed: true },
+] as const;
+
+const fleetVehicles = [
+  { role: "Primary", plate: "BHA-4271", capacity: "4.5 t", range: "312 km", response: "On site", status: "Ready" },
+  { role: "Backup 1", plate: "QLD-9813", capacity: "3.5 t", range: "286 km", response: "42 min", status: "Ready" },
+  { role: "Backup 2", plate: "NQR-5528", capacity: "4.0 t", range: "Proof missing", response: "55 min", status: "Blocked" },
+] as const;
+
+const deliveryDomains = Array.from(new Set(deliveryRiskCatalog.risks.map((risk) => risk.domain))).sort();
 
 const supplyMatches = [
   { id: "LOT-238", supplier: "El Wadi Farms", origin: "Badr, Beheira", crop: "Sauce tomatoes", quantity: 1400, demandKg: 1200, usable: 92, price: 4.75, buyerPrice: 9.5, transport: 1.8, match: 94, pickup: "Today · 5:30 PM" },
@@ -125,12 +154,27 @@ export default function ReHarvestApp() {
   const [notice, setNotice] = useState("");
   const [acceptedLots, setAcceptedLots] = useState<string[]>([]);
   const [demandFilter, setDemandFilter] = useState<"all" | "needs-match" | "matched">("all");
+  const [riskQuery, setRiskQuery] = useState("");
+  const [riskDomain, setRiskDomain] = useState("All domains");
+  const [releaseChecks, setReleaseChecks] = useState<Record<string, boolean>>(() => Object.fromEntries(deliveryReleaseGates.map((gate) => [gate.id, gate.passed])));
   const pipelineKg = useMemo(() => demands.reduce((sum, item) => sum + item.quantity, 0), [demands]);
   const visibleDemands = useMemo(() => demands.filter((demand) => {
     if (demandFilter === "matched") return demand.status === "Matched";
     if (demandFilter === "needs-match") return demand.status !== "Matched";
     return true;
   }), [demands, demandFilter]);
+  const filteredDeliveryRisks = useMemo(() => {
+    const query = riskQuery.trim().toLowerCase();
+    return deliveryRiskCatalog.risks.filter((risk) => {
+      const domainMatches = riskDomain === "All domains" || risk.domain === riskDomain;
+      const queryMatches = !query || [risk.id, risk.domain, risk.context, risk.scenario, risk.appControl]
+        .some((value) => value.toLowerCase().includes(query));
+      return domainMatches && queryMatches;
+    });
+  }, [riskDomain, riskQuery]);
+  const criticalBlocks = deliveryReleaseGates.filter((gate) => gate.critical && !releaseChecks[gate.id]);
+  const passedGateCount = deliveryReleaseGates.filter((gate) => releaseChecks[gate.id]).length;
+  const routeReady = criticalBlocks.length === 0;
 
   function submitDemand(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const data = new FormData(event.currentTarget);
@@ -185,6 +229,22 @@ export default function ReHarvestApp() {
             <article className="order-row"><span className="order-state blue"><Icon name="check" /></span><div><span className="eyebrow">RH-1248</span><h3>Juice oranges · 800 kg</h3><p>Nile Citrus Growers → The Daily Press</p></div><div className="order-status"><strong>Quality accepted</strong><span>Payment due 12 Aug</span></div><button className="icon-button"><Icon name="arrow" /></button></article>
             <article className="order-row"><span className="order-state olive"><Icon name="check" /></span><div><span className="eyebrow">RH-1243</span><h3>Kitchen potatoes · 1,500 kg</h3><p>Delta Harvest → Table Nine Catering</p></div><div className="order-status"><strong>Delivered</strong><span>4.2% sorting loss</span></div><button className="icon-button"><Icon name="arrow" /></button></article>
           </div><aside className="evidence-panel panel"><span className="eyebrow">Required evidence</span><h2>Close the loop</h2><ol><li className="done"><span><Icon name="check" size={13} /></span><div><strong>Supplier lot photos</strong><small>4 files logged</small></div></li><li className="done"><span><Icon name="check" size={13} /></span><div><strong>Loaded weight</strong><small>Scale slip logged</small></div></li><li className="current"><span>3</span><div><strong>Buyer acceptance</strong><small>Due after delivery</small></div></li><li><span>4</span><div><strong>Final loss & margin</strong><small>Close after payment</small></div></li></ol><button className="secondary-button">Open order evidence</button></aside></div>
+        </section>}
+        {activeView === "delivery" && <section className="view-page delivery-page">
+          <div className="view-toolbar panel"><div><span className="eyebrow">Paired Monte Carlo delivery model</span><h2>{deliveryDiagnostics.scenarioCount.toLocaleString()} practical delivery possibilities</h2><p>{deliveryRiskCatalog.riskCount.toLocaleString()} failure cases · {deliveryRiskCatalog.domainCount} domains · seed {deliveryDiagnostics.seed} · illustrative stress inputs, not forecasts</p></div><span className={`release-badge ${routeReady ? "ready" : "blocked"}`}><Icon name="shield" size={16} />{routeReady ? "Route releasable" : `${criticalBlocks.length} critical block${criticalBlocks.length === 1 ? "" : "s"}`}</span></div>
+          <div className="diagnostic-metrics delivery-metrics">
+            <article className="panel"><span>Protected delivery failure</span><strong>{deliveryDiagnostics.protected.failedDeliveryPct.toFixed(2)}%</strong><small>Versus {deliveryDiagnostics.unprotected.failedDeliveryPct.toFixed(2)}% without the modelled controls</small></article>
+            <article className="panel"><span>On-time outcomes</span><strong>{deliveryDiagnostics.protected.onTimePct.toFixed(2)}%</strong><small>Improves by {deliveryDiagnostics.controlImpact.onTimeImprovementPoints.toFixed(2)} percentage points</small></article>
+            <article className="panel"><span>P95 delay improvement</span><strong>{Math.round(deliveryDiagnostics.controlImpact.p95DelayImprovementMinutes)} min</strong><small>Protected P95: {Math.round(deliveryDiagnostics.protected.p95DisruptionDelayMinutes)} minutes</small></article>
+            <article className="panel"><span>Unsafe dispatches prevented</span><strong>{deliveryDiagnostics.controlImpact.preventedUnsafeDispatches.toLocaleString()}</strong><small>Within the paired two-million-run model</small></article>
+          </div>
+          <div className="delivery-control-grid">
+            <section className="panel release-console"><div className="panel-header"><div><span className="eyebrow">Non-overridable release console</span><h2>{passedGateCount} of {deliveryReleaseGates.length} gates passed</h2></div><strong className={routeReady ? "score-ready" : "score-blocked"}>{Math.round((passedGateCount / deliveryReleaseGates.length) * 100)}%</strong></div><div className="release-progress"><i style={{ width: `${(passedGateCount / deliveryReleaseGates.length) * 100}%` }} /></div><div className="release-checks">{deliveryReleaseGates.map((gate) => <button key={gate.id} className={releaseChecks[gate.id] ? "passed" : "failed"} aria-pressed={releaseChecks[gate.id]} onClick={() => setReleaseChecks((current) => ({ ...current, [gate.id]: !current[gate.id] }))}><span>{releaseChecks[gate.id] ? <Icon name="check" size={13} /> : "!"}</span><p><strong>{gate.label}</strong><small>{gate.critical ? "Critical · blocks dispatch" : "Required · supervisor exception only"}</small></p></button>)}</div><footer><div><strong>{routeReady ? "All critical evidence is current." : criticalBlocks[0]?.label}</strong><span>{routeReady ? "Release can be recorded with operator identity and timestamp." : "Resolve the first critical block before a vehicle moves."}</span></div><button className="primary-button" disabled={!routeReady} onClick={() => setNotice("Route RH-1251 released with the primary and both backup truck-driver pairs recorded.")}><Icon name="truck" />Release route</button></footer></section>
+            <aside className="panel fleet-panel"><div className="panel-header"><div><span className="eyebrow">Verified redundancy</span><h2>Primary + two backups</h2></div></div><div className="fleet-list">{fleetVehicles.map((vehicle, index) => { const thirdReady = index !== 2 || releaseChecks["fuel-backup-two"]; const status = index === 2 ? (thirdReady ? "Ready" : "Blocked") : vehicle.status; return <article key={vehicle.plate}><div><span>{vehicle.role}</span><strong>{vehicle.plate}</strong></div><dl><div><dt>Capacity</dt><dd>{vehicle.capacity}</dd></div><div><dt>Fuel range</dt><dd>{thirdReady && index === 2 ? "274 km" : vehicle.range}</dd></div><div><dt>Response</dt><dd>{vehicle.response}</dd></div></dl><b className={status === "Ready" ? "ready" : "blocked"}>{status}</b></article>; })}</div><div className="fuel-rule"><Icon name="shield" /><p><strong>No fuel statement is accepted on trust alone.</strong><span>Gauge + odometer photos, receipt, declared consumption, route + detour distance, and 25% reserve must agree for all three vehicles.</span></p></div><button className="secondary-button evidence-toggle" onClick={() => setReleaseChecks((current) => ({ ...current, "fuel-backup-two": !current["fuel-backup-two"] }))}>{releaseChecks["fuel-backup-two"] ? "Remove backup 2 fuel proof" : "Upload simulated backup 2 proof"}</button></aside>
+          </div>
+          <section className="panel fuel-playbook"><div><span className="eyebrow">What if the primary truck is short on fuel?</span><h2>Block, verify, refuel, or activate a proven backup.</h2></div><ol><li><span>1</span><p><strong>Automatic block</strong><small>Dispatch cannot be released when calculated range is below route + detour + 25% reserve.</small></p></li><li><span>2</span><p><strong>Evidence check</strong><small>Reject stale, inconsistent, edited, or vehicle-mismatched gauge, odometer, and receipt evidence.</small></p></li><li><span>3</span><p><strong>Controlled recovery</strong><small>Send the primary to an approved fuel point or activate the fastest verified backup truck-driver pair.</small></p></li><li><span>4</span><p><strong>Recalculate</strong><small>Recheck ETA, heat exposure, buyer readiness, route cost, and lot condition before release.</small></p></li></ol></section>
+          <section className="panel risk-catalog-panel"><div className="catalog-head"><div><span className="eyebrow">Searchable prevention library</span><h2>1,000 practical failure cases and built-in responses</h2><p>Each visible case connects a real-world failure to its app prevention; the report adds detection, evidence, owner, and fallback.</p></div><div className="catalog-filters"><label><span className="sr-only">Search delivery risks</span><Icon name="search" size={15} /><input value={riskQuery} onChange={(event) => setRiskQuery(event.target.value)} placeholder="Search fuel, driver, buyer, weather…" /></label><select aria-label="Filter risk domain" value={riskDomain} onChange={(event) => setRiskDomain(event.target.value)}><option>All domains</option>{deliveryDomains.map((domain) => <option key={domain}>{domain}</option>)}</select></div></div><div className="catalog-count">Showing {Math.min(filteredDeliveryRisks.length, 20).toLocaleString()} of {filteredDeliveryRisks.length.toLocaleString()} matching cases</div><div className="risk-card-grid">{filteredDeliveryRisks.slice(0, 20).map((risk) => <article key={risk.id}><header><span>{risk.id}</span><b>{risk.severity}</b></header><h3>{risk.scenario}</h3><p><strong>Built into app:</strong> {risk.appControl}</p><footer><span>{risk.domain}</span><span>{risk.context}</span></footer></article>)}</div>{filteredDeliveryRisks.length === 0 && <div className="empty-catalog"><Icon name="search" /><p>No failure case matches those filters.</p></div>}</section>
+          <section className="panel event-controls-panel"><div className="panel-header"><div><span className="eyebrow">Highest failure leverage in this model</span><h2>Events that most often become failed delivery</h2></div></div><div className="event-control-table"><header><span>Triggered event</span><span>Without controls</span><span>With controls</span><span>App prevention</span></header>{deliveryDiagnostics.eventImpact.slice(0, 8).map((event) => <div key={event.id}><strong>{event.label}</strong><span>{event.unprotectedFailureWhenTriggeredPct.toFixed(1)}%</span><span>{event.protectedFailureWhenTriggeredPct.toFixed(1)}%</span><p>{event.control}</p></div>)}</div><p className="model-note">These results are generated from explicit, illustrative probabilities and cost ranges. Replace every assumption with measured Egyptian pilot data before treating the percentages as predictions, pricing inputs, insurance estimates, or legal compliance evidence.</p></section>
         </section>}
         {activeView === "diagnostics" && <section className="view-page diagnostics-page">
           <div className="view-toolbar panel"><div><span className="eyebrow">Reproducible stress test</span><h2>{diagnostics.scenarioCount.toLocaleString()} operating possibilities</h2><p>Seed {diagnostics.seed} · assumptions are stress inputs, not market forecasts.</p></div><span className="diagnostic-badge"><Icon name="shield" size={16} /> Controls modelled</span></div>

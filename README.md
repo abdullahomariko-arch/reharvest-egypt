@@ -10,6 +10,7 @@ For the complete business model, operating risks, unit economics, pilot scorecar
 - Review verified supplier lots by match confidence, usable yield, price, location, and pickup date.
 - Reserve a lot only after the landed-cost and margin view is acceptable.
 - Track quality evidence, freight status, weight slips, and buyer acceptance.
+- Block route release until the primary truck and two independent backup truck-driver pairs pass fuel, safety, capacity, hygiene, driver, route, buyer, and recovery evidence gates.
 - Start with one corridor and one crop before expanding working capital.
 
 The included interface contains realistic Egypt-focused demonstration data. User actions are held in local React state for pilot review; they are not yet a durable multi-user transaction backend.
@@ -40,7 +41,7 @@ npm test
 npm audit --omit=dev
 ```
 
-`npm run diagnostics` runs a seeded 100,000-scenario operating and unit-economics stress test. Its aggregate results are stored in `diagnostics/monte-carlo-results.json`; the assumptions are deliberately broad stress inputs, not measured market forecasts.
+`npm run diagnostics` runs both seeded models: a 100,000-scenario operating/unit-economics stress test and a 2,000,000-scenario paired delivery-resilience stress test. The delivery model also generates a searchable catalog of 1,000 practical failure cases across 25 domains. Results are stored in `diagnostics/`; all probabilities and costs are deliberately broad control-design inputs, not measured market forecasts.
 
 ## Production-readiness gate
 

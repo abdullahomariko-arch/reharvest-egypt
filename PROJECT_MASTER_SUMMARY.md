@@ -35,7 +35,7 @@ Do not begin as an open marketplace where anyone can list anything. Do not buy s
 - **Order size:** approximately 500–3,500 kg
 - **Supplier base:** one primary source plus at least one backup
 - **Buyer base:** three to five recurring businesses
-- **Infrastructure:** rented transport, reusable crates, calibrated scales, basic sorting, and WhatsApp backup
+- **Infrastructure:** rented transport with one primary and two verified backup truck-driver pairs, reusable crates, calibrated scales, basic sorting, and an offline/WhatsApp backup
 - **Operating principle:** no confirmed demand, no purchase
 
 This corridor is deliberately narrow. Expansion should come only after repeat orders, stable quality, controlled losses, and positive contribution are proven.
@@ -81,6 +81,12 @@ Demonstrates reserved, in-transit, accepted, and delivered records, together wit
 ### Diagnostics
 
 Displays a reproducible 100,000-scenario stress test, protected outcome distribution, largest financial shocks, automatic operating gates, and the staged integration roadmap. The event rates are illustrative assumptions for control design, not forecasts of actual Egyptian market performance.
+
+### Delivery resilience
+
+Displays a separate reproducible 2,000,000-scenario paired stress test and a searchable library of 1,000 practical delivery failures across 25 domains. The route-release console begins blocked and enforces 15 evidence gates. Its core redundancy rule requires one primary vehicle and two independently verified backup truck-driver pairs, each with valid fuel range, payload, hygiene, response-time, and authority evidence. Fuel range must cover the route, detour allowance, and a 25% reserve. Missing or inconsistent evidence blocks dispatch.
+
+Using illustrative probabilities rather than measured pilot rates, the model produced 20.29% failed deliveries without controls and 4.87% with controls, a 17.57 percentage-point improvement in on-time outcomes, and a 355-minute improvement in P95 disruption delay. These values are model outputs for comparing control designs; they are not forecasts, compliance proof, insurance estimates, or service commitments.
 
 ### Design
 
@@ -190,7 +196,7 @@ Credit risk is especially dangerous. One unpaid 1,000 kg order at EGP 9.50/kg cr
 6. No expired or cancelled reservation can be collected.
 7. Any confirmed price, quantity, or quality change creates an audit record.
 8. No open buyer credit until the buyer earns a documented limit.
-9. Every important route has a backup supplier, buyer, and transport option.
+9. Every route has a backup supplier, buyer, and two verified backup truck-driver pairs.
 10. Demo data and simulated integrations must never be presented as live operations.
 
 ## 11. Main risks by category
