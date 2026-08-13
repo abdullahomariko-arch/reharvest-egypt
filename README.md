@@ -2,6 +2,8 @@
 
 ReHarvest is a managed B2B marketplace pilot for redirecting usable Grade-B and surplus produce into Egyptian food businesses. The operating model is demand-first: confirm buyer need, match a verified lot, inspect quality, approve landed economics, and control delivery evidence.
 
+For the complete business model, operating risks, unit economics, pilot scorecard, and product roadmap, read [PROJECT_MASTER_SUMMARY.md](PROJECT_MASTER_SUMMARY.md).
+
 ## Pilot workflow
 
 - Post confirmed demand from restaurants, central kitchens, juice producers, or processors.
