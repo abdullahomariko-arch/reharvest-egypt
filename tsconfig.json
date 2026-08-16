@@ -1,23 +1,14 @@
 {
   "compilerOptions": {
-    "target": "ES2023",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "allowImportingTsExtensions": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "jsx": "react-jsx",
-    "lib": [
-      "ES2023",
-      "DOM"
-    ]
+    "target": "ES2023", "module": "NodeNext", "moduleResolution": "NodeNext",
+    "strict": true, "allowImportingTsExtensions": true, "noEmit": true,
+    "skipLibCheck": true, "jsx": "react-jsx", "lib": ["ES2023", "DOM"],
+    "baseUrl": ".",
+    "paths": {
+      "@reharvest/core/*": ["packages/core/src/*"],
+      "@reharvest/payments/*": ["packages/payments/src/*"],
+      "@reharvest/db/*": ["packages/db/src/*"]
+    }
   },
-  "include": [
-    "packages/**/*.ts",
-    "packages/**/*.tsx",
-    "apps/**/*.ts",
-    "apps/**/*.tsx"
-  ]
+  "include": ["packages/**/*.ts", "packages/**/*.tsx", "apps/**/*.ts", "apps/**/*.tsx"]
 }

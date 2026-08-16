@@ -17,6 +17,7 @@
     "expo-sqlite": "~15.0.0",
     "expo-image-picker": "~16.0.0",
     "@reharvest/core": "workspace:*",
-    "@reharvest/payments": "workspace:*"
+    "@reharvest/payments": "workspace:*",
+    "react-native-webview": "13.12.5"
   }
 }

@@ -1,0 +1,18 @@
+{
+  "name": "@reharvest/api",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "test": "node --import tsx --test src/**/*.test.ts"
+  },
+  "dependencies": {
+    "hono": "^4.6.0",
+    "drizzle-orm": "^0.45.0",
+    "postgres": "^3.4.0",
+    "@reharvest/core": "workspace:*",
+    "@reharvest/payments": "workspace:*",
+    "@reharvest/db": "workspace:*"
+  }
+}

@@ -25,6 +25,7 @@ grades, holds and payments both sides trust enough to stop arguing about.
 
 ```
 apps/
+  api/        Hono service — payment orchestration, webhooks, idempotency
   mobile/     Expo · React Native · Arabic-first RTL
               supplier · buyer · inspector — one binary, role-switched
   admin/      Ops console — approvals, matching, holds, settlement, audit
@@ -63,6 +64,11 @@ governed one. Food safety is the deliberate exception to the exception: `D31` an
 `D32` have no override at any level.
 
 **4. Payments clear on bank lines, not screenshots.**
+A callback arriving at our webhook endpoint is an unauthenticated HTTP request
+from the internet. Before it may advance an order it survives four gates in order:
+HMAC signature, replay check, reconciliation, then the state machine. They are
+ordered cheapest-first, so a flood of forged callbacks costs one HMAC check each
+and never touches the database.
 Collection runs through Paymob's Intentions API (cards, Vodafone Cash and other
 wallets, Aman kiosk cash, valU). Nothing moves an order forward until payer,
 bank reference, amount and reversal status all match. Supplier payouts go through
@@ -158,8 +164,10 @@ ever enforce anything.
 - **The transport module.** Your handoff explicitly scopes delivery out. Vehicles,
   drivers, routes and proof of delivery are a separate system with its own failure
   modes; mixing them in would have blurred the control boundaries you drew.
-- **The admin console UI.** The schema, guard and state machines it sits on are
-  done; the screens are the next session's work.
+- **The admin console UI.** The schema, guard, state machines and payment service
+  it sits on are done; the screens are the next session's work.
+- **Order, lot and inspection HTTP routes.** Only the payment routes are wired.
+  The services behind the rest exist; the endpoints do not.
 - **The Figma design system.** The tokens in `apps/mobile/src/ui/theme.ts` are the
   source of truth and translate directly into Figma variables. Say the word and I
   will build the library and the screen set against them.

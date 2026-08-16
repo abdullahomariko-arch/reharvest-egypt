@@ -13,7 +13,7 @@ payments both sides trust enough to stop arguing about.
 
 ```bash
 pnpm install
-pnpm test          # 37 acceptance tests, keyed to catalog domain IDs
+pnpm test          # 54 acceptance tests, keyed to catalog domain IDs
 pnpm typecheck
 ```
 
@@ -31,12 +31,15 @@ in milliseconds and the mobile app and the server run the identical code.
 | How a refusal is shaped | `packages/core/src/guard.ts` |
 | What the rules actually prevent | `packages/core/src/controls.test.ts` |
 | How money clears | `packages/payments/src/reconciliation.ts` |
+| The four gates a webhook must survive | `apps/api/src/service/payment-service.ts` |
 | What the app feels like | `apps/mobile/src/screens/WeighAndAcceptScreen.tsx` |
+| How a buyer actually pays | `apps/mobile/src/screens/CheckoutScreen.tsx` |
 
 ## Layout
 
 ```
 apps/
+  api/        Hono service — payment orchestration, webhooks, idempotency
   mobile/     Expo · React Native · Arabic-first RTL
               supplier · buyer · inspector — one binary, role-switched
   admin/      Ops console — approvals, matching, holds, settlement, audit  (next)
