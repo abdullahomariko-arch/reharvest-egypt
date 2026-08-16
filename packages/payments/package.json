@@ -1,0 +1,13 @@
+{
+  "name": "@reharvest/payments",
+  "version": "2.0.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    "./paymob": "./src/paymob.ts",
+    "./reconciliation": "./src/reconciliation.ts"
+  },
+  "dependencies": {
+    "@reharvest/core": "workspace:*"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "@reharvest/db",
+  "version": "2.0.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    "./schema": "./src/schema.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.0"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "@reharvest/core",
+  "version": "2.0.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    "./money": "./src/money.ts",
+    "./quantity": "./src/quantity.ts",
+    "./invariants": "./src/invariants.ts",
+    "./state-machines": "./src/state-machines.ts",
+    "./guard": "./src/guard.ts",
+    "./controls": "./src/controls.generated.ts"
+  }
+}
