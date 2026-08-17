@@ -13,7 +13,7 @@ payments both sides trust enough to stop arguing about.
 
 ```bash
 pnpm install
-pnpm test          # 54 acceptance tests, keyed to catalog domain IDs
+pnpm test          # 59 acceptance tests, keyed to catalog domain IDs
 pnpm typecheck
 ```
 
@@ -34,6 +34,8 @@ in milliseconds and the mobile app and the server run the identical code.
 | The four gates a webhook must survive | `apps/api/src/service/payment-service.ts` |
 | What the app feels like | `apps/mobile/src/screens/WeighAndAcceptScreen.tsx` |
 | How a buyer actually pays | `apps/mobile/src/screens/CheckoutScreen.tsx` |
+| The design system | `apps/mobile/src/ui/theme.ts` + `ui/components.tsx` |
+| The one rule with no override | `apps/mobile/src/screens/QualityCheckScreen.tsx` |
 
 ## Layout
 

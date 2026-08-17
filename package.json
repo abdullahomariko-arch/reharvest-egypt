@@ -11,7 +11,7 @@
     "apps/*"
   ],
   "scripts": {
-    "test": "node --import tsx --test packages/core/src/controls.test.ts apps/api/src/service/payment-service.test.ts",
+    "test": "node --import tsx --test packages/core/src/controls.test.ts packages/core/src/packaging.test.ts apps/api/src/service/payment-service.test.ts",
     "typecheck": "tsc --noEmit",
     "gen:controls": "node scripts/generate-controls.mjs",
     "db:generate": "drizzle-kit generate"

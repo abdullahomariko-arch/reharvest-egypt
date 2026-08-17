@@ -89,9 +89,9 @@ export default function CheckoutScreen(props: CheckoutProps) {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={[type.label, { color: color.inkSoft }]}>{props.orderCode}</Text>
+      <Text style={[type.label, { color: color.inkMuted }]}>{props.orderCode}</Text>
       <Text style={type.display}>{props.cropAr}</Text>
-      <Text style={[type.body, { color: color.inkSoft }]}>
+      <Text style={[type.body, { color: color.inkMuted }]}>
         {props.quantityLabelAr} · {props.deliveryWindowAr}
       </Text>
 
@@ -100,7 +100,7 @@ export default function CheckoutScreen(props: CheckoutProps) {
       {/* The deposit is the largest figure on the screen because it is the
           number the buyer is about to act on. The total is context, not the ask. */}
       <View style={styles.amountPanel}>
-        <Text style={[type.label, { color: color.crateWash }]}>العربون المطلوب الآن</Text>
+        <Text style={[type.label, { color: color.brandSoft }]}>العربون المطلوب الآن</Text>
         <Text style={[type.figureLarge, { color: '#FFFFFF' }]}>{Money.format(props.depositDue)}</Text>
 
         <View style={styles.divider} />
@@ -111,7 +111,7 @@ export default function CheckoutScreen(props: CheckoutProps) {
 
       <View style={{ height: space.md }} />
 
-      <Text style={[type.body, { color: color.inkSoft }]}>
+      <Text style={[type.body, { color: color.inkMuted }]}>
         العربون يثبّت الكمية والسعر ويبدأ التجهيز. الباقي يُحسب على الوزن الصافي المستلم فعليًا، وليس على
         الوزن المتوقع.
       </Text>
@@ -134,18 +134,18 @@ export default function CheckoutScreen(props: CheckoutProps) {
         <>
           <View style={{ height: space.md }} />
           <View style={styles.errorBox}>
-            <Text style={[type.body, { color: color.reject }]}>{error}</Text>
+            <Text style={[type.body, { color: color.danger }]}>{error}</Text>
           </View>
         </>
       ) : null}
 
       <View style={{ height: space.lg }} />
       <Pressable onPress={props.onCancel} style={styles.secondary}>
-        <Text style={[type.label, { color: color.crateDeep }]}>الرجوع دون دفع</Text>
+        <Text style={[type.label, { color: color.brandDeep }]}>الرجوع دون دفع</Text>
       </Pressable>
 
       <View style={{ height: space.md }} />
-      <Text style={[type.label, { color: color.inkSoft, fontSize: 13, textAlign: 'center' }]}>
+      <Text style={[type.label, { color: color.inkMuted, fontSize: 13, textAlign: 'center' }]}>
         بيانات البطاقة تُدخل على صفحة مزوّد الدفع مباشرة ولا تمر عبر التطبيق
       </Text>
     </ScrollView>
@@ -174,7 +174,7 @@ function PaymobCheckout({
 
   const html = `<!doctype html><html lang="ar" dir="rtl"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>body{margin:0;background:${color.paper};font-family:system-ui}</style>
+<style>body{margin:0;background:${color.surface};font-family:system-ui}</style>
 </head><body>
 <div id="paymob-checkout"></div>
 <script src="https://accept.paymob.com/js/v1/paymob.js"></script>
@@ -184,10 +184,10 @@ function PaymobCheckout({
 </body></html>`;
 
   return (
-    <View style={{ flex: 1, backgroundColor: color.paper }}>
+    <View style={{ flex: 1, backgroundColor: color.surface }}>
       <View style={styles.sheetHeader}>
         <Pressable onPress={onDismiss} hitSlop={12} accessibilityLabel="إغلاق صفحة الدفع">
-          <Text style={[type.label, { color: color.crateDeep }]}>إلغاء</Text>
+          <Text style={[type.label, { color: color.brandDeep }]}>إلغاء</Text>
         </Pressable>
         <Text style={type.label}>الدفع الآمن</Text>
         <View style={{ width: 48 }} />
@@ -195,7 +195,7 @@ function PaymobCheckout({
 
       {!ready ? (
         <View style={styles.centered}>
-          <ActivityIndicator color={color.crate} />
+          <ActivityIndicator color={color.brand} />
         </View>
       ) : null}
 
@@ -237,9 +237,9 @@ function MethodRow({
     >
       <View style={{ flex: 1 }}>
         <Text style={[type.bodyStrong, { color: color.ink }]}>{copy.titleAr}</Text>
-        <Text style={[type.label, { color: color.inkSoft, fontSize: 14 }]}>{copy.subtitleAr}</Text>
+        <Text style={[type.label, { color: color.inkMuted, fontSize: 14 }]}>{copy.subtitleAr}</Text>
       </View>
-      {busy ? <ActivityIndicator color={color.crate} /> : null}
+      {busy ? <ActivityIndicator color={color.brand} /> : null}
     </Pressable>
   );
 }
@@ -247,34 +247,34 @@ function MethodRow({
 function Row({ labelAr, value }: { labelAr: string; value: string }) {
   return (
     <View style={styles.row}>
-      <Text style={[type.body, { color: color.crateWash }]}>{labelAr}</Text>
+      <Text style={[type.body, { color: color.brandSoft }]}>{labelAr}</Text>
       <Text style={[type.figure, { color: '#FFFFFF', fontSize: 17 }]}>{value}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: color.paper },
+  screen: { flex: 1, backgroundColor: color.surface },
   content: { padding: space.lg, paddingBottom: space.xxl },
-  amountPanel: { backgroundColor: color.crateDeep, borderRadius: radius.lg, padding: space.lg },
+  amountPanel: { backgroundColor: color.brandDeep, borderRadius: radius.lg, padding: space.lg },
   divider: { height: 1, backgroundColor: '#2E5F80', marginVertical: space.md },
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: space.xs },
   methodRow: {
     flexDirection: 'row',
     alignItems: 'center',
     minHeight: touch.primary,
-    backgroundColor: color.paperRaised,
+    backgroundColor: color.surfaceSunk,
     borderWidth: 1,
-    borderColor: color.hairline,
+    borderColor: color.line,
     borderRadius: radius.md,
     padding: space.md,
     marginBottom: space.sm,
   },
-  methodRowSelected: { borderColor: color.crate, borderWidth: 2, backgroundColor: color.crateWash },
+  methodRowSelected: { borderColor: color.brand, borderWidth: 2, backgroundColor: color.brandSoft },
   errorBox: {
-    backgroundColor: color.rejectWash,
+    backgroundColor: color.dangerSoft,
     borderRightWidth: 6,
-    borderRightColor: color.reject,
+    borderRightColor: color.danger,
     borderRadius: radius.md,
     padding: space.md,
   },
@@ -282,7 +282,7 @@ const styles = StyleSheet.create({
     minHeight: touch.min,
     borderRadius: radius.md,
     borderWidth: 1.5,
-    borderColor: color.crate,
+    borderColor: color.brand,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -293,7 +293,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     height: touch.min,
     borderBottomWidth: 1,
-    borderBottomColor: color.hairline,
+    borderBottomColor: color.line,
   },
   centered: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, alignItems: 'center', justifyContent: 'center' },
 });

@@ -41,7 +41,7 @@ export function BlockCard({ refusal, onRequestException }: { refusal: Refusal; o
   const isBlock = refusal.severity === 'BLOCK';
   return (
     <View style={isBlock ? blockCard.container : blockCard.holdContainer} accessibilityRole="alert">
-      <Text style={[type.bodyStrong, { color: isBlock ? color.reject : color.clay }]}>{refusal.messageAr}</Text>
+      <Text style={[type.bodyStrong, { color: isBlock ? color.danger : color.amber }]}>{refusal.messageAr}</Text>
 
       <View style={{ height: space.sm }} />
       <Text style={[type.body, { color: color.ink }]}>{refusal.correctionPathAr}</Text>
@@ -52,14 +52,14 @@ export function BlockCard({ refusal, onRequestException }: { refusal: Refusal; o
           style={styles.exceptionButton}
           accessibilityLabel={`طلب استثناء من ${refusal.exceptionApproverAr}`}
         >
-          <Text style={[type.label, { color: color.crateDeep }]}>
+          <Text style={[type.label, { color: color.brandDeep }]}>
             طلب استثناء من {refusal.exceptionApproverAr}
           </Text>
         </Pressable>
       ) : null}
 
       <View style={{ height: space.sm }} />
-      <Text style={[type.label, { color: color.inkSoft, fontSize: 13 }]}>
+      <Text style={[type.label, { color: color.inkMuted, fontSize: 13 }]}>
         {refusal.domainId ? `${refusal.domainId} · ` : ''}
         {refusal.reasonCode}
       </Text>
@@ -117,9 +117,9 @@ export default function WeighAndAcceptScreen(props: WeighAndAcceptProps) {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-      <Text style={[type.label, { color: color.inkSoft }]}>{props.supplierNameAr}</Text>
+      <Text style={[type.label, { color: color.inkMuted }]}>{props.supplierNameAr}</Text>
       <Text style={type.display}>{props.cropAr}</Text>
-      <Text style={[type.figure, { color: color.inkSoft }]}>{props.lotId}</Text>
+      <Text style={[type.figure, { color: color.inkMuted }]}>{props.lotId}</Text>
 
       <View style={{ height: space.lg }} />
 
@@ -144,12 +144,12 @@ export default function WeighAndAcceptScreen(props: WeighAndAcceptProps) {
       {/* The net weight is the number that becomes money, so it gets the
           largest type on the screen and is never editable by hand. */}
       <View style={styles.netPanel}>
-        <Text style={[type.label, { color: color.crateWash }]}>الوزن الصافي</Text>
+        <Text style={[type.label, { color: color.brandSoft }]}>الوزن الصافي</Text>
         <Text style={[type.figureLarge, { color: '#FFFFFF' }]}>
           {evaluation.ok ? Qty.format(grams(evaluation.value.netGrams)) : '—'}
         </Text>
         <View style={{ height: space.sm }} />
-        <Text style={[type.body, { color: color.crateWash }]}>
+        <Text style={[type.body, { color: color.brandSoft }]}>
           {evaluation.ok ? `${Money.format(evaluation.value.lineTotal)} على سعر ${Money.format(props.agreedPricePerKg)}/كجم` : 'أدخل الوزن وعدد الصناديق'}
         </Text>
       </View>
@@ -169,13 +169,13 @@ export default function WeighAndAcceptScreen(props: WeighAndAcceptProps) {
         style={[styles.primary, (!evaluation.ok || posting) && styles.primaryDisabled]}
         accessibilityRole="button"
       >
-        <Text style={[type.bodyStrong, { color: evaluation.ok ? '#FFFFFF' : color.inkSoft }]}>
+        <Text style={[type.bodyStrong, { color: evaluation.ok ? '#FFFFFF' : color.inkMuted }]}>
           {posting ? 'جارٍ التسجيل…' : 'تسجيل الوزن واستلام الشحنة'}
         </Text>
       </Pressable>
 
       <View style={{ height: space.sm }} />
-      <Text style={[type.label, { color: color.inkSoft, textAlign: 'center' }]}>
+      <Text style={[type.label, { color: color.inkMuted, textAlign: 'center' }]}>
         يُسجَّل هذا الوزن باسمك ولا يمكن تعديله لاحقًا إلا بسجل تصحيح معتمد
       </Text>
     </ScrollView>
@@ -293,22 +293,22 @@ function Field({
         onChangeText={onChange}
         keyboardType={keyboardType}
         style={styles.input}
-        placeholderTextColor={color.inkSoft}
+        placeholderTextColor={color.inkMuted}
       />
-      <Text style={[type.label, { color: color.inkSoft, fontSize: 13, marginTop: space.xs }]}>{hintAr}</Text>
+      <Text style={[type.label, { color: color.inkMuted, fontSize: 13, marginTop: space.xs }]}>{hintAr}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: color.paper },
+  screen: { flex: 1, backgroundColor: color.surface },
   content: { padding: space.lg, paddingBottom: space.xxl },
   input: {
     ...type.figure,
     color: color.ink,
-    backgroundColor: color.paperRaised,
+    backgroundColor: color.surfaceSunk,
     borderWidth: 1,
-    borderColor: color.hairline,
+    borderColor: color.line,
     borderRadius: radius.md,
     minHeight: touch.min,
     paddingHorizontal: space.md,
@@ -316,24 +316,24 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   netPanel: {
-    backgroundColor: color.crateDeep,
+    backgroundColor: color.brandDeep,
     borderRadius: radius.lg,
     padding: space.lg,
   },
   primary: {
-    backgroundColor: color.crate,
+    backgroundColor: color.brand,
     minHeight: touch.primary,
     borderRadius: radius.md,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  primaryDisabled: { backgroundColor: color.hairline },
+  primaryDisabled: { backgroundColor: color.line },
   exceptionButton: {
     marginTop: space.md,
     minHeight: touch.min,
     borderRadius: radius.sm,
     borderWidth: 1.5,
-    borderColor: color.crate,
+    borderColor: color.brand,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: space.md,

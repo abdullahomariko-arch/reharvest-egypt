@@ -190,3 +190,57 @@ export type WeightSource =
     }
   | { kind: 'nominal-from-packaging'; specId: string; version: number }
   | { kind: 'declared-by-party'; declaredBy: string };
+
+/* ------------------------------------------------------------------ *
+ * Registered packaging specs.
+ *
+ * These live in the database in production; the constant here is the seed
+ * and the fallback the mobile app carries so it can compute a net weight
+ * with no signal. Specs are append-only — correcting a tare means adding a
+ * new version, never editing an existing one, because lots already accepted
+ * under v2 must keep settling against v2 forever.
+ * ------------------------------------------------------------------ */
+
+export const CRATE_SPECS = {
+  /** The standard blue plastic field crate used across the Delta. */
+  plastic_standard_v2: {
+    specId: 'plastic_standard',
+    version: 2,
+    crateTareGrams: 500n,
+    nominalNetGramsPerCrate: 20_000n,
+    approvedAt: '2026-03-01T00:00:00Z',
+    approvedBy: 'ops:quality-lead',
+  },
+  /** Woven sack, used for onions and potatoes. */
+  sack_50kg_v1: {
+    specId: 'sack_50kg',
+    version: 1,
+    crateTareGrams: 180n,
+    nominalNetGramsPerCrate: 50_000n,
+    approvedAt: '2026-03-01T00:00:00Z',
+    approvedBy: 'ops:quality-lead',
+  },
+} as const satisfies Record<string, PackagingSpec>;
+
+/**
+ * Gross weight off the scale, minus the tare of a counted number of empty
+ * containers, using a named spec version.
+ *
+ * Throws (rather than clamping) when the tare equals or exceeds the gross.
+ * That combination almost always means the wrong crate template was selected,
+ * and silently producing a zero or negative net is how a supplier ends up
+ * being paid for weight that was never there.
+ */
+export function netFromGross(gross: Quantity, spec: PackagingSpec, containerCount: number): Quantity {
+  if (gross.unit !== 'g') {
+    throw new QuantityError('Gross weight must be a weight', 'QTY_UNIT_MISMATCH');
+  }
+  if (!Number.isInteger(containerCount) || containerCount <= 0) {
+    throw new QuantityError(
+      `Container count must be a positive whole number, got ${containerCount}`,
+      'QTY_BAD_CONTAINER_COUNT',
+    );
+  }
+  const tare = grams(BigInt(containerCount) * spec.crateTareGrams);
+  return Qty.net(gross, tare);
+}

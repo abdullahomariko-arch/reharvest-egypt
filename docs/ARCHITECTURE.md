@@ -63,6 +63,13 @@ no exception path gets worked around outside the system, which is worse than a
 governed one. Food safety is the deliberate exception to the exception: `D31` and
 `D32` have no override at any level.
 
+**3b. The interface tells you which numbers are measurements.**
+Anything that becomes money — net weight, deposit due, amount released — renders
+on a dark instrument panel with phosphor-green figures, borrowed from the platform
+scales in every Egyptian wholesale market. Prices, counts and labels never appear
+there. A supplier can therefore tell at a glance which figure on the screen they
+are being paid against, without reading a caption.
+
 **4. Payments clear on bank lines, not screenshots.**
 A callback arriving at our webhook endpoint is an unauthenticated HTTP request
 from the internet. Before it may advance an order it survives four gates in order:
@@ -166,6 +173,10 @@ ever enforce anything.
   modes; mixing them in would have blurred the control boundaries you drew.
 - **The admin console UI.** The schema, guard, state machines and payment service
   it sits on are done; the screens are the next session's work.
+- **Navigation shell and remaining screens.** Four screens are built against the
+  design system (post a lot, weigh and accept, quality check, checkout). The
+  market browser, order detail and ops console screens are designed but not yet
+  written as components.
 - **Order, lot and inspection HTTP routes.** Only the payment routes are wired.
   The services behind the rest exist; the endpoints do not.
 - **The Figma design system.** The tokens in `apps/mobile/src/ui/theme.ts` are the
