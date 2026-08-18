@@ -18,6 +18,7 @@
     "expo-image-picker": "~16.0.0",
     "@reharvest/core": "workspace:*",
     "@reharvest/payments": "workspace:*",
-    "react-native-webview": "13.12.5"
+    "react-native-webview": "13.12.5",
+    "react-native-svg": "15.8.0"
   }
 }

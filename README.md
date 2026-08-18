@@ -36,6 +36,8 @@ in milliseconds and the mobile app and the server run the identical code.
 | How a buyer actually pays | `apps/mobile/src/screens/CheckoutScreen.tsx` |
 | The design system | `apps/mobile/src/ui/theme.ts` + `ui/components.tsx` |
 | The one rule with no override | `apps/mobile/src/screens/QualityCheckScreen.tsx` |
+| Role-based navigation | `apps/mobile/src/navigation/AppShell.tsx` |
+| Every user-facing string, ar + en | `apps/mobile/src/i18n/index.tsx` |
 
 ## Layout
 

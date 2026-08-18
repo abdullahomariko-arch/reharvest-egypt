@@ -173,10 +173,6 @@ ever enforce anything.
   modes; mixing them in would have blurred the control boundaries you drew.
 - **The admin console UI.** The schema, guard, state machines and payment service
   it sits on are done; the screens are the next session's work.
-- **Navigation shell and remaining screens.** Four screens are built against the
-  design system (post a lot, weigh and accept, quality check, checkout). The
-  market browser, order detail and ops console screens are designed but not yet
-  written as components.
 - **Order, lot and inspection HTTP routes.** Only the payment routes are wired.
   The services behind the rest exist; the endpoints do not.
 - **The Figma design system.** The tokens in `apps/mobile/src/ui/theme.ts` are the
