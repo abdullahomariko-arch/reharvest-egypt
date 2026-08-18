@@ -8,11 +8,12 @@
     "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
-    "hono": "^4.6.0",
-    "drizzle-orm": "^0.45.0",
-    "postgres": "^3.4.0",
+    "@hono/node-server": "^2.1.1",
     "@reharvest/core": "*",
+    "@reharvest/db": "*",
     "@reharvest/payments": "*",
-    "@reharvest/db": "*"
+    "drizzle-orm": "^0.45.0",
+    "hono": "^4.6.0",
+    "postgres": "^3.4.0"
   }
 }

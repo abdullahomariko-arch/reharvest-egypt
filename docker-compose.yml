@@ -1,0 +1,38 @@
+# Local development stack.
+#
+# Postgres 16 because the migrations use `GENERATED` identity columns and
+# partial indexes that older versions handle differently.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: reharvest
+      POSTGRES_PASSWORD: local_dev_only
+      POSTGRES_DB: reharvest
+    ports: ['5432:5432']
+    volumes:
+      - reharvest_pgdata:/var/lib/postgresql/data
+      # Migrations run in filename order on first boot of an empty volume.
+      - ./packages/db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # Without this the API starts before Postgres accepts connections and
+      # dies on its first query.
+      test: ['CMD-SHELL', 'pg_isready -U reharvest -d reharvest']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://reharvest:local_dev_only@db:5432/reharvest
+      AUTH_SIGNING_SECRET: local-development-secret-at-least-32-chars
+      PAYMOB_SECRET_KEY: ${PAYMOB_SECRET_KEY:-sk_test_placeholder}
+      PAYMOB_PUBLIC_KEY: ${PAYMOB_PUBLIC_KEY:-pk_test_placeholder}
+      PAYMOB_HMAC_SECRET: ${PAYMOB_HMAC_SECRET:-hmac_test_placeholder}
+    ports: ['8787:8787']
+
+volumes:
+  reharvest_pgdata:

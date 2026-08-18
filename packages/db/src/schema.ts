@@ -32,6 +32,7 @@ import {
   uniqueIndex,
   primaryKey,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 /* ---------------------------------------------------------------- *
  * Enums mirror the state machines in @reharvest/core exactly.
@@ -128,11 +129,22 @@ export const lots = pgTable(
     harvestDate: timestamp('harvest_date', { withTimezone: true }).notNull(),
     state: lotState('state').notNull().default('DECLARED'),
 
-    acceptedGrams: bigint('accepted_grams', { mode: 'bigint' }).notNull().default(0n),
-    reservedGrams: bigint('reserved_grams', { mode: 'bigint' }).notNull().default(0n),
-    heldGrams: bigint('held_grams', { mode: 'bigint' }).notNull().default(0n),
-    rejectedGrams: bigint('rejected_grams', { mode: 'bigint' }).notNull().default(0n),
-    disposedGrams: bigint('disposed_grams', { mode: 'bigint' }).notNull().default(0n),
+    acceptedGrams: bigint('accepted_grams', { mode: 'bigint' }).notNull().default(sql`0`),
+    reservedGrams: bigint('reserved_grams', { mode: 'bigint' }).notNull().default(sql`0`),
+    heldGrams: bigint('held_grams', { mode: 'bigint' }).notNull().default(sql`0`),
+    rejectedGrams: bigint('rejected_grams', { mode: 'bigint' }).notNull().default(sql`0`),
+    disposedGrams: bigint('disposed_grams', { mode: 'bigint' }).notNull().default(sql`0`),
+
+    /**
+     * The lot's own commercial terms, as distinct from an order's terms.
+     * What the supplier is asking, what it arrived in, and when it expires.
+     */
+    askPricePerKgPiastres: bigint('ask_price_per_kg_piastres', { mode: 'bigint' }).notNull().default(sql`0`),
+    containerCount: integer('container_count').notNull().default(0),
+    /** Pinned for the lot's lifetime. Specs are versioned and append-only. */
+    packagingSpecId: text('packaging_spec_id'),
+    packagingSpecVersion: integer('packaging_spec_version'),
+    collectBy: timestamp('collect_by', { withTimezone: true }),
 
     /** Optimistic concurrency. Two agents reserving the same lot is the classic double-sell. */
     version: integer('version').notNull().default(1),
@@ -195,6 +207,12 @@ export const orders = pgTable(
     orderCode: text('order_code').notNull().unique(),
     buyerId: uuid('buyer_id').notNull().references(() => parties.id),
     state: orderState('state').notNull().default('INTEREST'),
+    /**
+     * The key from the request that created this order. Uniquely indexed, so a
+     * replayed request cannot become a second order even if the application
+     * check is bypassed.
+     */
+    idempotencyKey: text('idempotency_key'),
     version: integer('version').notNull().default(1),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

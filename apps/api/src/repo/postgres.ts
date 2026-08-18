@@ -28,19 +28,8 @@ import type { LotState, OrderState } from '@reharvest/core/state-machines';
 
 type Db = PostgresJsDatabase<Record<string, never>>;
 
-/**
- * Columns the domain needs that the base schema keeps elsewhere. Rather than
- * widening the `lots` table, these are read from the lot's current term row.
- */
-interface LotSidecar {
-  pricePerKgPiastres: bigint;
-  containerCount: number;
-  collectBy: string;
-}
-
-export function createLotRepo(db: Db, sidecar: (lotId: string) => Promise<LotSidecar>): LotRepo {
-  const toRow = async (r: typeof lots.$inferSelect): Promise<LotRow> => {
-    const extra = await sidecar(r.id);
+export function createLotRepo(db: Db): LotRepo {
+  const toRow = (r: typeof lots.$inferSelect): LotRow => {
     return {
       id: r.id,
       lotCode: r.lotCode,
@@ -52,9 +41,9 @@ export function createLotRepo(db: Db, sidecar: (lotId: string) => Promise<LotSid
       heldGrams: r.heldGrams,
       rejectedGrams: r.rejectedGrams,
       disposedGrams: r.disposedGrams,
-      pricePerKgPiastres: extra.pricePerKgPiastres,
-      containerCount: extra.containerCount,
-      collectBy: extra.collectBy,
+      pricePerKgPiastres: r.askPricePerKgPiastres,
+      containerCount: r.containerCount,
+      collectBy: (r.collectBy ?? r.createdAt).toISOString(),
       listedAt: r.createdAt.toISOString(),
       version: r.version,
     };
@@ -71,7 +60,7 @@ export function createLotRepo(db: Db, sidecar: (lotId: string) => Promise<LotSid
         .select()
         .from(lots)
         .where(where.length ? and(...where) : undefined);
-      return Promise.all(rows.map(toRow));
+      return rows.map(toRow);
     },
 
     async byId(lotId) {
@@ -95,6 +84,9 @@ export function createLotRepo(db: Db, sidecar: (lotId: string) => Promise<LotSid
           heldGrams: row.heldGrams,
           rejectedGrams: row.rejectedGrams,
           disposedGrams: row.disposedGrams,
+          askPricePerKgPiastres: row.pricePerKgPiastres,
+          containerCount: row.containerCount,
+          collectBy: new Date(row.collectBy),
         })
         .returning();
       return toRow(r);
@@ -193,28 +185,43 @@ export function createOrderRepo(db: Db): OrderRepo2 {
     },
 
     async findByIdempotencyKey(key) {
-      // Reservations carry the key that created them, so a replayed order
-      // request finds its way back to the original row rather than making a
-      // second reservation against the same lot.
-      const [r] = await db
-        .select()
-        .from(reservations)
-        .where(sql`${reservations.id}::text = ${key} OR ${reservations.orderId}::text = ${key}`)
-        .limit(1);
-      return r ? loadByOrderId(r.orderId) : null;
+      // The key is stored on the order itself. A replayed request finds the
+      // original order rather than falling through to the reservation logic and
+      // being told there is no stock left — stock its own first attempt took.
+      const [o] = await db.select().from(orders).where(eq(orders.idempotencyKey, key)).limit(1);
+      return o ? loadByOrderId(o.id) : null;
     },
 
     /**
-     * Order, terms and reservation are written in one transaction. An order row
-     * without its reservation is an order that promises stock nobody set aside.
+     * The lot reservation, the order, its terms and the reservation row are all
+     * written in a single transaction.
+     *
+     * The compare-and-swap on `lots.version` happens inside that transaction, so
+     * if another buyer won the race the whole thing rolls back and no order
+     * exists. Doing the CAS first and the insert second — which is what this
+     * used to do — left phantom reserved weight behind on any insert failure.
      */
-    async insert(row, idempotencyKey) {
-      await db.transaction(async (tx) => {
+    async reserveAndCreateOrder({ lotId, expectedVersion, reservedGramsAfter, lotStateAfter, order: row, idempotencyKey }) {
+      return db.transaction(async (tx) => {
+        const claimed = await tx
+          .update(lots)
+          .set({
+            reservedGrams: reservedGramsAfter,
+            state: lotStateAfter as never,
+            version: sql`${lots.version} + 1`,
+          })
+          .where(and(eq(lots.id, lotId), eq(lots.version, expectedVersion)))
+          .returning({ id: lots.id });
+
+        // Lost the race. Rolling back is implicit: nothing else runs.
+        if (claimed.length === 0) return null;
+
         await tx.insert(orders).values({
           id: row.id,
           orderCode: row.orderCode,
           buyerId: row.buyerId,
           state: row.state as never,
+          idempotencyKey,
         });
 
         await tx.insert(orderTermVersions).values({
@@ -235,9 +242,9 @@ export function createOrderRepo(db: Db): OrderRepo2 {
           // silently disappears from the market while nobody pays for it.
           expiresAt: new Date(Date.parse(row.createdAt) + 48 * 3_600_000),
         });
-      });
 
-      return row;
+        return row;
+      });
     },
   };
 }

@@ -69,10 +69,15 @@ function memoryRepos() {
       const code = orderKeys.get(key);
       return code ? (orders.get(code) ?? null) : null;
     },
-    async insert(row, key) {
-      orders.set(row.orderCode, row);
-      orderKeys.set(key, row.orderCode);
-      return row;
+    async reserveAndCreateOrder({ lotId, expectedVersion, reservedGramsAfter, lotStateAfter, order, idempotencyKey }) {
+      // Mirrors the real transaction: if the compare-and-swap fails, no order
+      // is written at all.
+      const cur = lots.get(lotId);
+      if (!cur || cur.version !== expectedVersion) return null;
+      lots.set(lotId, { ...cur, reservedGrams: reservedGramsAfter, state: lotStateAfter, version: cur.version + 1 });
+      orders.set(order.orderCode, order);
+      orderKeys.set(idempotencyKey, order.orderCode);
+      return order;
     },
   };
 
@@ -325,6 +330,47 @@ describe('ordering', () => {
     const finalLot = (await lotRepo.byId(lot.id))!;
     assert.equal(finalLot.reservedGrams, 800_000n);
     assert.ok(finalLot.acceptedGrams - finalLot.reservedGrams >= 0n);
+  });
+});
+
+describe('atomicity', () => {
+  /**
+   * Regression test for a bug found by running the API against a real Postgres.
+   *
+   * The reservation used to be a separate write from the order insert. When the
+   * insert failed — a foreign key, a constraint, a dropped connection — the
+   * reserved weight stayed on the lot. That weight then belonged to no order and
+   * was invisible to every future buyer, quietly shrinking the market.
+   */
+  test('a failed order insert leaves no reserved weight behind', async () => {
+    const { lotRepo, orderRepo, lot } = await seedWeighedLot();
+
+    // Simulate exactly what Postgres did: the order write blows up.
+    const exploding: OrderRepo2 = {
+      ...orderRepo,
+      async reserveAndCreateOrder() {
+        throw new Error('foreign key violation on orders.buyer_id');
+      },
+    };
+
+    const svc = new OrderService(lotRepo, exploding, clock);
+    await assert.rejects(
+      () => svc.create({ buyerId: 'ghost', lotId: lot.id, quantityGrams: 800_000n, idempotencyKey: 'atomic:1' }),
+      /foreign key/,
+    );
+
+    const after = (await lotRepo.byId(lot.id))!;
+    assert.equal(after.reservedGrams, 0n, 'no phantom reservation may survive a failed order');
+    assert.equal(after.version, lot.version, 'the lot row must not have moved at all');
+  });
+
+  test('the lot is only touched once per successful order', async () => {
+    const { lotRepo, orderRepo, lot } = await seedWeighedLot();
+    const svc = new OrderService(lotRepo, orderRepo, clock);
+    await svc.create({ buyerId: 'b', lotId: lot.id, quantityGrams: 200_000n, idempotencyKey: 'atomic:2' });
+    const after = (await lotRepo.byId(lot.id))!;
+    assert.equal(after.version, lot.version + 1);
+    assert.equal(after.reservedGrams, 200_000n);
   });
 });
 

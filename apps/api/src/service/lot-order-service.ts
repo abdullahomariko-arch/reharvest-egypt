@@ -121,7 +121,26 @@ export interface LotRepo {
 export interface OrderRepo2 {
   byCode(orderCode: string): Promise<OrderRow | null>;
   findByIdempotencyKey(key: string): Promise<OrderRow | null>;
-  insert(row: OrderRow, idempotencyKey: string): Promise<OrderRow>;
+
+  /**
+   * Reserves stock against the lot AND creates the order, atomically.
+   *
+   * These cannot be two calls. Reserving first and inserting second leaves
+   * phantom reserved stock behind whenever the insert fails — weight that is
+   * unavailable to every future buyer and belongs to no order. That is worse
+   * than a double-sell, because a double-sell is at least visible: phantom
+   * reservations just quietly shrink the market until someone reconciles by hand.
+   *
+   * Returns null if the lot version moved, meaning another buyer won the race.
+   */
+  reserveAndCreateOrder(input: {
+    lotId: string;
+    expectedVersion: number;
+    reservedGramsAfter: bigint;
+    lotStateAfter: LotState;
+    order: OrderRow;
+    idempotencyKey: string;
+  }): Promise<OrderRow | null>;
 }
 
 export interface Clock {
@@ -477,21 +496,6 @@ export class OrderService {
     const reservedAfter = lot.reservedGrams + input.quantityGrams;
     const fullyReserved = reservedAfter >= lot.acceptedGrams - lot.heldGrams;
 
-    const updated = await this.lots.updateIfVersion(lot.id, lot.version, {
-      reservedGrams: reservedAfter,
-      state: fullyReserved && lot.state === 'PARTIALLY_RESERVED' ? 'FULLY_RESERVED' : 'PARTIALLY_RESERVED',
-    });
-
-    if (!updated) {
-      throw new ServiceError(
-        'Someone reserved from this lot a moment ago.',
-        'LOT_VERSION_CONFLICT',
-        'D14',
-        'Refresh to see what is left, then order again.',
-        409,
-      );
-    }
-
     const now = this.clock.now();
     const order: OrderRow = {
       id: crypto.randomUUID(),
@@ -507,7 +511,28 @@ export class OrderService {
       createdAt: now,
     };
 
-    return this.orders.insert(order, input.idempotencyKey);
+    // One call, one transaction. The reservation and the order live or die
+    // together — see the note on reserveAndCreateOrder.
+    const created = await this.orders.reserveAndCreateOrder({
+      lotId: lot.id,
+      expectedVersion: lot.version,
+      reservedGramsAfter: reservedAfter,
+      lotStateAfter: fullyReserved && lot.state === 'PARTIALLY_RESERVED' ? 'FULLY_RESERVED' : 'PARTIALLY_RESERVED',
+      order,
+      idempotencyKey: input.idempotencyKey,
+    });
+
+    if (!created) {
+      throw new ServiceError(
+        'Someone reserved from this lot a moment ago.',
+        'LOT_VERSION_CONFLICT',
+        'D14',
+        'Refresh to see what is left, then order again.',
+        409,
+      );
+    }
+
+    return created;
   }
 
   async byCode(orderCode: string): Promise<OrderRow> {
