@@ -71,7 +71,12 @@ export interface PaymentRepo {
   /** Returns the existing row if this provider transaction was already recorded. */
   findByProviderTransactionId(id: string): Promise<StoredPayment | null>;
   recordInbound(p: StoredPayment): Promise<void>;
-  markUnmatched(id: string, reasonCode: string, note: string): Promise<void>;
+  /**
+   * Records money that cleared at the provider but could not be attributed.
+   * The amount is required: this is real money sitting in the merchant account,
+   * and writing it as zero would understate the balance finance has to allocate.
+   */
+  markUnmatched(id: string, reasonCode: string, note: string, amount: Money): Promise<void>;
 }
 
 export interface StoredPayment {
@@ -224,6 +229,7 @@ export class PaymentService {
         verified.providerTransactionId,
         'ORDER_NOT_FOUND',
         `Cleared ${Money.format(verified.amount, 'en-EG')} references unknown order "${verified.merchantOrderId}".`,
+        verified.amount,
       );
       return {
         outcome: 'held_for_review',

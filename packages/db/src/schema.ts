@@ -57,6 +57,10 @@ export const lotState = pgEnum('lot_state', [
 export const paymentState = pgEnum('payment_state', [
   'DRAFT', 'AWAITING_BENEFICIARY_COOLDOWN', 'PENDING_APPROVAL', 'APPROVED',
   'SUBMITTED_TO_PSP', 'CLEARED', 'FAILED', 'REVERSED',
+  /* Inbound only: money has arrived and is recorded, but has not reconciled
+     to an order. RECEIVED is short or unconfirmed; UNMATCHED quotes an order
+     code we do not recognise. Neither may advance an order. */
+  'RECEIVED', 'UNMATCHED',
 ]);
 
 export const holdKind = pgEnum('hold_kind', [

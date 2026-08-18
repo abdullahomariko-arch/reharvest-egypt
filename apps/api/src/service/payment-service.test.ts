@@ -59,7 +59,7 @@ const baseOrder: OrderRecord = {
 function fakes(order: OrderRecord = baseOrder) {
   const advanced: Array<{ to: string; reasonCode: string }> = [];
   const stored: StoredPayment[] = [];
-  const unmatched: Array<{ id: string; reasonCode: string }> = [];
+  const unmatched: Array<{ id: string; reasonCode: string; amount: Money }> = [];
   let current = order;
 
   const orders: OrderRepo = {
@@ -79,8 +79,8 @@ function fakes(order: OrderRecord = baseOrder) {
     async recordInbound(p) {
       stored.push(p);
     },
-    async markUnmatched(id, reasonCode) {
-      unmatched.push({ id, reasonCode });
+    async markUnmatched(id, reasonCode, _note, amount) {
+      unmatched.push({ id, reasonCode, amount });
     },
   };
 
@@ -300,6 +300,8 @@ describe('webhook — gate 3: reconciliation', () => {
     const result = await svc.handleWebhook(payload, hmac);
     assert.equal(result.outcome, 'held_for_review');
     assert.equal(f.unmatched[0]?.reasonCode, 'ORDER_NOT_FOUND');
+    // The amount must be recorded, not zeroed: this money is really in the account.
+    assert.equal(f.unmatched[0]?.amount.amount, 264000n);
   });
 });
 

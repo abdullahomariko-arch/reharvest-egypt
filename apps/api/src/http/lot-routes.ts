@@ -58,12 +58,27 @@ export function buildLotRoutes(deps: LotRouteDeps) {
     buyerCount: lot.reservedGrams > 0n ? 1 : 0,
   });
 
-  app.use('*', async (c, next) => {
+  /*
+    Scoped to this router's own paths, deliberately NOT '*'.
+
+    A wildcard here is mounted at the application root, so it also intercepts
+    /webhooks/paymob — which authenticates by HMAC signature, not by bearer
+    token, because Paymob has no way to hold one. The result was a 401 on every
+    callback, Paymob retrying forever, and deposits that never cleared while
+    every unit test passed.
+
+    Middleware that guards a router should name the paths that router owns.
+  */
+  const guard = async (c: any, next: () => Promise<void>) => {
     const p = await deps.authenticate(c.req.raw);
     if (!p) return c.json({ error: 'unauthenticated' }, 401);
-    c.set('principal' as never, p as never);
+    c.set('principal', p);
     await next();
-  });
+  };
+
+  for (const path of ['/lots', '/lots/*', '/orders', '/orders/*']) {
+    app.use(path, guard);
+  }
 
   const who = (c: any): Principal => c.get('principal');
 

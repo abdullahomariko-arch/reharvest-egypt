@@ -24,6 +24,7 @@ import { makeAuthenticator } from './auth.ts';
 import { LotService, OrderService } from './service/lot-order-service.ts';
 import { PaymentService } from './service/payment-service.ts';
 import { createLotRepo, createOrderRepo } from './repo/postgres.ts';
+import { createPaymentOrderRepo, createPaymentRepo, verifyAuditChain } from './repo/payment-postgres.ts';
 import { PaymobClient } from '@reharvest/payments/paymob';
 import { buildP0Registry } from '@reharvest/core/guard';
 
@@ -122,6 +123,26 @@ export function buildServer(config: Config) {
   */
   app.get('/health', (c) => c.json({ ok: true, at: clock.now() }));
 
+  /*
+    Audit chain integrity. Exposed as an endpoint so it can be scheduled and
+    alerted on rather than being something somebody remembers to check. A broken
+    chain means either a bug in how entries are written or someone with database
+    access editing history; both need a person immediately.
+  */
+  app.get('/internal/audit-integrity', async (c) => {
+    const result = await verifyAuditChain(db);
+    return c.json(
+      {
+        ok: result.ok,
+        checked: result.checked,
+        // Serialised as a string for the same reason every other integer in
+        // this API is: JSON.stringify throws on a bigint outright.
+        brokenAtSeq: result.brokenAtSeq?.toString(),
+      },
+      result.ok ? 200 : 500,
+    );
+  });
+
   app.get('/ready', async (c) => {
     try {
       await db.execute(sql`SELECT 1`);
@@ -150,19 +171,8 @@ export function buildServer(config: Config) {
       payments: new PaymentService({
         paymob: new PaymobClient(config.paymob as never, fetch),
         config: config.paymob as never,
-        orders: {
-          async findByCode() {
-            return null;
-          },
-          async advance() {},
-        },
-        payments: {
-          async findByProviderTransactionId() {
-            return null;
-          },
-          async recordInbound() {},
-          async markUnmatched() {},
-        },
+        orders: createPaymentOrderRepo(db),
+        payments: createPaymentRepo(db),
         controls: buildP0Registry({ record: () => {} }),
         clock,
       }),
