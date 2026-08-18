@@ -8,6 +8,6 @@
     "./reconciliation": "./src/reconciliation.ts"
   },
   "dependencies": {
-    "@reharvest/core": "workspace:*"
+    "@reharvest/core": "*"
   }
 }

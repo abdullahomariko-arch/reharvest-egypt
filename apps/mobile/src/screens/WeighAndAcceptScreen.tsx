@@ -1,341 +1,247 @@
 /**
- * شاشة الوزن والاستلام — Weigh and accept.
+ * الاستلام والوزن — Weigh and accept.
  *
- * This is the screen where money is decided, so it is the screen where the
- * controls have to be visible rather than implied. It is also the reference
- * implementation for every other form in the app:
+ * The screen the whole business rests on. This is where a number becomes an
+ * obligation: everything downstream — what the supplier is paid, what the buyer
+ * is billed, what margin the platform books — is derived from the figure entered
+ * here, and none of it can be corrected later without an audited reversal.
  *
- *   1. The rule runs on the device, before the network. An operator standing in
- *      a packing house with one bar of signal finds out the tare is wrong in
- *      200ms, not after a failed sync.
- *   2. A refusal is a BlockCard: what is wrong, which rule, what to do next.
- *      Never a toast, never a red border with no words.
- *   3. Nothing irreversible leaves this screen without an idempotency key, so a
- *      double tap on a frozen phone cannot post the weight twice. (D53.)
+ * Four things it refuses to do:
+ *
+ * 1. **Accept a net weight typed by a person.** Net is derived from gross minus
+ *    a counted tare. There is no field for it.
+ *
+ * 2. **Settle against an uncalibrated scale.** `assertSettlementWeight` blocks a
+ *    weight whose calibration certificate has expired. An out-of-calibration
+ *    platform scale drifting 2% is 16kg on an 800kg load, every load, in one
+ *    direction, and nobody notices for a season.
+ *
+ * 3. **Silently absorb a shortfall.** A delivery materially under the ordered
+ *    quantity is flagged before acceptance, because the buyer is billed on this
+ *    figure and needs to have agreed to it.
+ *
+ * 4. **Post twice.** The idempotency key is fixed per mount, so a double-tap or
+ *    a retry after a timeout is one weighing, not two.
  */
 
-import React, { useMemo, useState, useCallback } from 'react';
-import { View, Text, TextInput, Pressable, ScrollView, I18nManager, StyleSheet } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { View, Text, ScrollView, StyleSheet } from 'react-native';
 
-import { kg, grams, Qty, QuantityError, assertSettlementWeight, type WeightSource } from '@reharvest/core/quantity';
 import { Money, egp } from '@reharvest/core/money';
-import { color, type, space, touch, radius, blockCard } from '../ui/theme';
+import {
+  Qty,
+  kg,
+  grams,
+  netFromGross,
+  assertSettlementWeight,
+  QuantityError,
+  type Quantity,
+  type PackagingSpec,
+  type WeightSource,
+} from '@reharvest/core/quantity';
+import { color, space, type } from '../ui/theme';
+import { Instrument, BlockCard, Field, PrimaryButton, Pill } from '../ui/components';
+import { useT, useLang } from '../i18n/index';
 
-I18nManager.allowRTL(true);
-
-/* ------------------------------------------------------------------ *
- * BlockCard — the signature component.
- * ------------------------------------------------------------------ */
-
-export interface Refusal {
-  readonly severity: 'BLOCK' | 'HOLD';
-  readonly reasonCode: string;
-  readonly messageAr: string;
-  readonly correctionPathAr: string;
-  readonly domainId?: string;
-  /** Present only when a governed exception path exists for this rule. */
-  readonly exceptionApproverAr?: string;
-}
-
-export function BlockCard({ refusal, onRequestException }: { refusal: Refusal; onRequestException?: () => void }) {
-  const isBlock = refusal.severity === 'BLOCK';
-  return (
-    <View style={isBlock ? blockCard.container : blockCard.holdContainer} accessibilityRole="alert">
-      <Text style={[type.bodyStrong, { color: isBlock ? color.danger : color.amber }]}>{refusal.messageAr}</Text>
-
-      <View style={{ height: space.sm }} />
-      <Text style={[type.body, { color: color.ink }]}>{refusal.correctionPathAr}</Text>
-
-      {refusal.exceptionApproverAr ? (
-        <Pressable
-          onPress={onRequestException}
-          style={styles.exceptionButton}
-          accessibilityLabel={`طلب استثناء من ${refusal.exceptionApproverAr}`}
-        >
-          <Text style={[type.label, { color: color.brandDeep }]}>
-            طلب استثناء من {refusal.exceptionApproverAr}
-          </Text>
-        </Pressable>
-      ) : null}
-
-      <View style={{ height: space.sm }} />
-      <Text style={[type.label, { color: color.inkMuted, fontSize: 13 }]}>
-        {refusal.domainId ? `${refusal.domainId} · ` : ''}
-        {refusal.reasonCode}
-      </Text>
-    </View>
-  );
-}
-
-/* ------------------------------------------------------------------ *
- * Screen
- * ------------------------------------------------------------------ */
+/** Below this, a shortfall is ordinary shrinkage. Above it, somebody must agree. */
+const SHORTFALL_TOLERANCE_BP = 500n; // 5%
 
 export interface WeighAndAcceptProps {
   readonly lotId: string;
-  readonly cropAr: string;
-  readonly supplierNameAr: string;
-  readonly agreedPricePerKg: ReturnType<typeof egp.fromDecimalString>;
+  readonly cropLabel: string;
+  readonly supplierName: string;
+  readonly expectedNet: Quantity;
+  readonly agreedPricePerKg: Money;
+  readonly packagingSpec: PackagingSpec;
   readonly scale: WeightSource;
-  readonly crateTareGrams: bigint;
-  readonly onPost: (result: AcceptedWeight) => Promise<void>;
-}
-
-export interface AcceptedWeight {
-  readonly lotId: string;
-  readonly grossGrams: bigint;
-  readonly tareGrams: bigint;
-  readonly netGrams: bigint;
-  readonly lineTotal: ReturnType<typeof egp.fromDecimalString>;
-  readonly scaleId: string;
-  readonly idempotencyKey: string;
+  readonly onRecord: (result: {
+    lotId: string;
+    grossGrams: bigint;
+    containerCount: number;
+    netGrams: bigint;
+    lineTotal: Money;
+    idempotencyKey: string;
+  }) => Promise<void>;
 }
 
 export default function WeighAndAcceptScreen(props: WeighAndAcceptProps) {
-  const [grossText, setGrossText] = useState('');
-  const [crateCount, setCrateCount] = useState('');
-  const [posting, setPosting] = useState(false);
+  const t = useT();
+  const { lang } = useLang();
+  const locale = lang === 'ar' ? 'ar-EG' : 'en-EG';
 
-  // One stable key per screen mount. Retrying after a dropped connection reuses
-  // it, so the server can recognise the repeat instead of posting twice.
+  const [gross, setGross] = useState('');
+  const [containers, setContainers] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [recorded, setRecorded] = useState(false);
+
+  // Fixed for the life of the mount. Deriving it from the clock would make a
+  // retry after a timeout look like a second delivery.
   const idempotencyKey = useMemo(
-    () => `weigh:${props.lotId}:${Date.now().toString(36)}`,
+    () => `weighing:${props.lotId}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
     [props.lotId],
   );
 
-  const evaluation = useMemo(() => evaluate(props, grossText, crateCount), [props, grossText, crateCount]);
-
-  const post = useCallback(async () => {
-    if (!evaluation.ok || posting) return;
-    setPosting(true);
+  /** Checked once, before anything else, because it invalidates every reading. */
+  const scaleFault = useMemo(() => {
     try {
-      await props.onPost({ ...evaluation.value, idempotencyKey });
-    } finally {
-      setPosting(false);
+      assertSettlementWeight(props.scale);
+      return null;
+    } catch (e) {
+      return e instanceof QuantityError ? e.reasonCode : 'QTY_UNVERIFIED_SETTLEMENT_WEIGHT';
     }
-  }, [evaluation, posting, props, idempotencyKey]);
+  }, [props.scale]);
+
+  const calc = useMemo(() => {
+    if (scaleFault) return { ready: false as const, fault: scaleFault };
+
+    const count = /^\d+$/.test(containers.trim()) ? Number(containers.trim()) : null;
+    if (count === null || count <= 0) return { ready: false as const, fault: null };
+
+    let grossQty: Quantity;
+    try {
+      grossQty = kg(gross);
+    } catch {
+      return { ready: false as const, fault: null };
+    }
+
+    try {
+      const net = netFromGross(grossQty, props.packagingSpec, count);
+      const difference = net.value - props.expectedNet.value;
+      const shortfallLimit = (props.expectedNet.value * SHORTFALL_TOLERANCE_BP) / 10_000n;
+      return {
+        ready: true as const,
+        fault: null,
+        net,
+        tare: grams(grossQty.value - net.value),
+        difference,
+        materiallyShort: -difference > shortfallLimit,
+        lineTotal: Money.perKgTimesGrams(props.agreedPricePerKg, net.value),
+      };
+    } catch (e) {
+      if (e instanceof QuantityError) return { ready: false as const, fault: e.reasonCode };
+      throw e;
+    }
+  }, [gross, containers, scaleFault, props.packagingSpec, props.expectedNet, props.agreedPricePerKg]);
+
+  const record = async () => {
+    if (!calc.ready) return;
+    setBusy(true);
+    try {
+      await props.onRecord({
+        lotId: props.lotId,
+        grossGrams: kg(gross).value,
+        containerCount: Number(containers),
+        netGrams: calc.net.value,
+        lineTotal: calc.lineTotal,
+        idempotencyKey,
+      });
+      setRecorded(true);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-      <Text style={[type.label, { color: color.inkMuted }]}>{props.supplierNameAr}</Text>
-      <Text style={type.display}>{props.cropAr}</Text>
-      <Text style={[type.figure, { color: color.inkMuted }]}>{props.lotId}</Text>
+    <ScrollView style={s.screen} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
+      <Text style={type.eyebrow}>{props.lotId}</Text>
+      <Text style={[type.display, { marginTop: 2 }]}>{props.cropLabel}</Text>
+      <Text style={[type.body, { marginTop: 3 }]}>{props.supplierName}</Text>
 
       <View style={{ height: space.lg }} />
 
       <Field
-        labelAr="الوزن القائم (كجم)"
-        hintAr="اقرأ الرقم من الميزان كما هو"
-        value={grossText}
-        onChange={setGrossText}
-        keyboardType="decimal-pad"
+        label={t('weigh.gross')}
+        hint={t('weigh.grossHint')}
+        value={gross}
+        onChangeText={setGross}
       />
-
       <Field
-        labelAr="عدد الصناديق"
-        hintAr={`وزن الصندوق الفارغ ${Number(props.crateTareGrams) / 1000} كجم حسب المواصفة المعتمدة`}
-        value={crateCount}
-        onChange={setCrateCount}
+        label={t('weigh.containers')}
+        hint={t('weigh.containersHint')}
+        value={containers}
+        onChangeText={setContainers}
         keyboardType="number-pad"
       />
 
-      <View style={{ height: space.lg }} />
+      <Instrument
+        caption={t('weigh.net')}
+        value={calc.ready ? Qty.format(calc.net, 'en-EG').replace(' kg', '') : null}
+        unit="kg"
+        faulted={!!calc.fault}
+        note={calc.fault ? t('weigh.cannotRead') : calc.ready ? t('weigh.netOk') : t('weigh.netIdle')}
+        rows={
+          calc.ready
+            ? [
+                { label: t('weigh.tare'), value: Qty.format(calc.tare, 'en-EG') },
+                { label: t('weigh.expected'), value: Qty.format(props.expectedNet, 'en-EG') },
+                {
+                  label: t('weigh.difference'),
+                  value: `${calc.difference >= 0n ? '+' : ''}${Qty.format(grams(calc.difference), 'en-EG')}`,
+                },
+                { label: t('weigh.lineTotal'), value: Money.format(calc.lineTotal, 'en-EG'), emphasis: true },
+              ]
+            : undefined
+        }
+      />
 
-      {/* The net weight is the number that becomes money, so it gets the
-          largest type on the screen and is never editable by hand. */}
-      <View style={styles.netPanel}>
-        <Text style={[type.label, { color: color.brandSoft }]}>الوزن الصافي</Text>
-        <Text style={[type.figureLarge, { color: '#FFFFFF' }]}>
-          {evaluation.ok ? Qty.format(grams(evaluation.value.netGrams)) : '—'}
-        </Text>
-        <View style={{ height: space.sm }} />
-        <Text style={[type.body, { color: color.brandSoft }]}>
-          {evaluation.ok ? `${Money.format(evaluation.value.lineTotal)} على سعر ${Money.format(props.agreedPricePerKg)}/كجم` : 'أدخل الوزن وعدد الصناديق'}
-        </Text>
-      </View>
-
-      {!evaluation.ok && evaluation.refusal ? (
-        <>
-          <View style={{ height: space.md }} />
-          <BlockCard refusal={evaluation.refusal} />
-        </>
+      {calc.fault ? (
+        <BlockCard
+          message={t(`block.${calc.fault}`)}
+          correction={t(`block.${calc.fault}.fix`)}
+          domainId={calc.fault.startsWith('QTY_SCALE') || calc.fault.startsWith('QTY_UNVERIFIED') ? 'D26' : 'D34'}
+          reasonCode={calc.fault}
+        />
       ) : null}
 
-      <View style={{ height: space.lg }} />
+      {/*
+        A shortfall is a warning, not a block. The inspector is standing in front
+        of the load; refusing to let them record what is actually on the scale
+        would send the transaction back to WhatsApp. What it must not do is pass
+        silently, so it is stated and it travels with the record.
+      */}
+      {calc.ready && calc.materiallyShort ? (
+        <View style={s.warn}>
+          <Text style={[type.bodyStrong, { color: color.amber, fontSize: 14.5 }]}>{t('weigh.short.msg')}</Text>
+          <Text style={[type.body, { color: color.ink, marginTop: 6 }]}>{t('weigh.short.fix')}</Text>
+          <Text style={[type.hint, { marginTop: 8 }]}>D24 · QTY_SHORT_VS_ORDER</Text>
+        </View>
+      ) : null}
 
-      <Pressable
-        onPress={post}
-        disabled={!evaluation.ok || posting}
-        style={[styles.primary, (!evaluation.ok || posting) && styles.primaryDisabled]}
-        accessibilityRole="button"
-      >
-        <Text style={[type.bodyStrong, { color: evaluation.ok ? '#FFFFFF' : color.inkMuted }]}>
-          {posting ? 'جارٍ التسجيل…' : 'تسجيل الوزن واستلام الشحنة'}
-        </Text>
-      </Pressable>
+      <View style={{ height: space.md }} />
 
-      <View style={{ height: space.sm }} />
-      <Text style={[type.label, { color: color.inkMuted, textAlign: 'center' }]}>
-        يُسجَّل هذا الوزن باسمك ولا يمكن تعديله لاحقًا إلا بسجل تصحيح معتمد
+      {recorded ? (
+        <View style={{ alignItems: 'flex-start', marginBottom: space.sm }}>
+          <Pill label={t('weigh.recordedPill')} variant="good" />
+        </View>
+      ) : null}
+
+      <PrimaryButton
+        label={recorded ? t('weigh.recordedCta') : t('weigh.cta')}
+        onPress={record}
+        disabled={!calc.ready || busy || recorded}
+      />
+
+      <Text style={[type.hint, { textAlign: 'center', marginTop: 11 }]}>
+        {props.scale.kind === 'verified-scale'
+          ? t('weigh.calibration', {
+              id: props.scale.scaleId,
+              d: new Date(props.scale.calibrationValidUntil).toLocaleDateString(locale),
+            })
+          : t('weigh.noScale')}
       </Text>
     </ScrollView>
   );
 }
 
-/* ------------------------------------------------------------------ *
- * The rule, run locally. Identical logic runs again server-side —
- * the client copy is for speed and clarity, never for authority.
- * ------------------------------------------------------------------ */
-
-type Evaluation =
-  | { ok: true; value: Omit<AcceptedWeight, 'idempotencyKey'>; refusal?: undefined }
-  | { ok: false; refusal?: Refusal };
-
-function evaluate(props: WeighAndAcceptProps, grossText: string, crateText: string): Evaluation {
-  if (!grossText.trim() || !crateText.trim()) return { ok: false };
-
-  try {
-    assertSettlementWeight(props.scale);
-  } catch (e) {
-    return {
-      ok: false,
-      refusal: {
-        severity: 'BLOCK',
-        domainId: 'D34',
-        reasonCode: (e as QuantityError).reasonCode ?? 'QTY_UNVERIFIED_SETTLEMENT_WEIGHT',
-        messageAr: 'لا يصلح هذا الميزان للتسوية المالية — المعايرة منتهية أو غير مسجَّلة.',
-        correctionPathAr: 'استخدم ميزانًا معايرًا، أو سجِّل المعايرة الجديدة قبل الاستلام.',
-      },
-    };
-  }
-
-  let gross;
-  try {
-    gross = kg(grossText);
-  } catch {
-    return {
-      ok: false,
-      refusal: {
-        severity: 'BLOCK',
-        domainId: 'D51',
-        reasonCode: 'QTY_UNPARSEABLE',
-        messageAr: 'صيغة الوزن غير مقروءة.',
-        correctionPathAr: 'اكتب الوزن بالكيلوجرام، بثلاث خانات عشرية كحد أقصى، مثل ٨١٢٫٥',
-      },
-    };
-  }
-
-  const count = Number(crateText);
-  if (!Number.isInteger(count) || count <= 0) {
-    return {
-      ok: false,
-      refusal: {
-        severity: 'BLOCK',
-        domainId: 'D51',
-        reasonCode: 'QTY_FRACTIONAL_COUNT',
-        messageAr: 'عدد الصناديق يجب أن يكون رقمًا صحيحًا أكبر من صفر.',
-        correctionPathAr: 'أعد عدّ الصناديق على الميزان.',
-      },
-    };
-  }
-
-  const tare = grams(BigInt(count) * props.crateTareGrams);
-
-  try {
-    const net = Qty.net(gross, tare);
-    return {
-      ok: true,
-      value: {
-        lotId: props.lotId,
-        grossGrams: gross.value,
-        tareGrams: tare.value,
-        netGrams: net.value,
-        lineTotal: Money.perKgTimesGrams(props.agreedPricePerKg, net.value),
-        scaleId: props.scale.kind === 'verified-scale' ? props.scale.scaleId : '',
-      },
-    };
-  } catch (e) {
-    // The most common real failure: the wrong crate template is selected, so
-    // the tare eats the whole load. Say that, rather than "invalid input".
-    return {
-      ok: false,
-      refusal: {
-        severity: 'BLOCK',
-        domainId: 'D34',
-        reasonCode: (e as QuantityError).reasonCode ?? 'QTY_NET_NOT_POSITIVE',
-        messageAr: `وزن الفارغ (${Qty.format(tare)}) أكبر من أو يساوي الوزن القائم (${Qty.format(gross)}).`,
-        correctionPathAr: 'تأكد من نوع الصندوق المختار ومن تصفير الميزان، ثم أعد الوزن.',
-      },
-    };
-  }
-}
-
-/* ------------------------------------------------------------------ */
-
-function Field({
-  labelAr,
-  hintAr,
-  value,
-  onChange,
-  keyboardType,
-}: {
-  labelAr: string;
-  hintAr: string;
-  value: string;
-  onChange: (v: string) => void;
-  keyboardType: 'decimal-pad' | 'number-pad';
-}) {
-  return (
-    <View style={{ marginBottom: space.md }}>
-      <Text style={[type.label, { color: color.ink }]}>{labelAr}</Text>
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        keyboardType={keyboardType}
-        style={styles.input}
-        placeholderTextColor={color.inkMuted}
-      />
-      <Text style={[type.label, { color: color.inkMuted, fontSize: 13, marginTop: space.xs }]}>{hintAr}</Text>
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
+const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: color.surface },
-  content: { padding: space.lg, paddingBottom: space.xxl },
-  input: {
-    ...type.figure,
-    color: color.ink,
-    backgroundColor: color.surfaceSunk,
-    borderWidth: 1,
-    borderColor: color.line,
-    borderRadius: radius.md,
-    minHeight: touch.min,
-    paddingHorizontal: space.md,
-    marginTop: space.sm,
-    textAlign: 'right',
-  },
-  netPanel: {
-    backgroundColor: color.brandDeep,
-    borderRadius: radius.lg,
-    padding: space.lg,
-  },
-  primary: {
-    backgroundColor: color.brand,
-    minHeight: touch.primary,
-    borderRadius: radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  primaryDisabled: { backgroundColor: color.line },
-  exceptionButton: {
-    marginTop: space.md,
-    minHeight: touch.min,
-    borderRadius: radius.sm,
-    borderWidth: 1.5,
-    borderColor: color.brand,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: space.md,
+  content: { padding: space.md, paddingBottom: space.xxl },
+  warn: {
+    backgroundColor: color.amberSoft,
+    borderStartWidth: 5,
+    borderStartColor: color.amber,
+    borderRadius: 10,
+    padding: 14,
+    marginTop: 14,
   },
 });

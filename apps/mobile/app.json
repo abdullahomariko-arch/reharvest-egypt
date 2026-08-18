@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "ReHarvest",
+    "slug": "reharvest",
+    "version": "2.0.0",
+    "orientation": "portrait",
+    "scheme": "reharvest",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "extra": {
+      "apiBaseUrl": "https://api.reharvest.example"
+    },
+    "ios": { "supportsTablet": false, "bundleIdentifier": "eg.reharvest.app" },
+    "android": { "package": "eg.reharvest.app", "edgeToEdgeEnabled": true },
+    "web": { "bundler": "metro", "output": "static" },
+    "plugins": ["expo-router", "expo-secure-store", "expo-font"],
+    "locales": { "ar": "./locales/ar.json" }
+  }
+}

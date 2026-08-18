@@ -11,8 +11,8 @@
     "hono": "^4.6.0",
     "drizzle-orm": "^0.45.0",
     "postgres": "^3.4.0",
-    "@reharvest/core": "workspace:*",
-    "@reharvest/payments": "workspace:*",
-    "@reharvest/db": "workspace:*"
+    "@reharvest/core": "*",
+    "@reharvest/payments": "*",
+    "@reharvest/db": "*"
   }
 }
