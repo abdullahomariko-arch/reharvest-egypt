@@ -129,3 +129,65 @@ Four things need qualified Egyptian professionals, not a developer:
 The 87% loss-reduction figure in the original handoff is a synthetic model
 output. It is useful for deciding what to build first and is not evidence of
 anything. Do not put it in front of an investor as a result.
+
+
+## Ops console
+
+The console is served by the API process at `/ops`. There is no separate
+deployment, and no separate build step — it is server-rendered HTML.
+
+| Page | What it is for |
+|---|---|
+| `/ops` | Exposure, buyer concentration against the ceiling, and today's decisions |
+| `/ops/lots` | Every lot, its state, and what is actually available to promise |
+| `/ops/orders` | Orders with value and deposit due |
+| `/ops/payments` | Money that cleared at the provider but is not attributed to an order |
+| `/ops/payouts` | Outbound settlements awaiting a second approver |
+| `/ops/audit` | The hash-chained log, with a live integrity check |
+
+Access needs an `ops_agent`, `ops_manager`, `finance` or `executive` role. A
+supplier or buyer with a perfectly valid token gets a 403, not a redirect —
+they should never see the whole book.
+
+### Allocating money by hand
+
+`/ops/payments` holds money that is genuinely in the merchant account but could
+not be attributed automatically — usually a buyer quoting an old order code on a
+bank transfer. Allocation is held to exactly the same threshold as the automated
+webhook path: an allocation short of the deposit records the money and leaves the
+order where it is. The manual route is not a way around the rule.
+
+A payment that has already cleared cannot be allocated again. If it went to the
+wrong order, raise a reversal — allocating twice makes one transfer pay two
+orders, and the books balance while the yard is short a delivery.
+
+### Approving a payout
+
+Needs a different person from whoever prepared it. This is checked in the
+console, in the service, and by a CHECK constraint in the database, because a
+control that lives in one place is one refactor away from not existing.
+Seniority is not an exemption: an executive cannot approve their own payout
+either.
+
+## Before going live
+
+Three things are known-incomplete and are deliberate, not oversights:
+
+1. **The idempotency store is in-memory.** Correct for one server, wrong for
+   two. Behind a load balancer, two instances will not see each other's replays
+   and a retried payment could process twice. Move it to Redis or a Postgres
+   table before scaling horizontally.
+
+2. **Distance is a fixed 28 km.** Road distance belongs to the transport module,
+   which is deliberately out of scope per the original handoff.
+
+3. **Beneficiary account numbers are stored as `enc:placeholder` by the seed.**
+   Real encryption at rest must be wired before any real bank detail is entered.
+
+## Professional advice still needed
+
+The software enforces rules; it cannot tell you which rules a regulator will
+apply. Before real money moves, get qualified Egyptian advice on: NFSA food
+safety duties, ETA e-invoicing and tax treatment, the legal form of the supplier
+and buyer contracts, and whether the trading structure needs a CBE payment
+licence or can operate as merchant of record.

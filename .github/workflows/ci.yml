@@ -1,0 +1,97 @@
+# CI.
+#
+# The database job is the one that matters. Five of the bugs found while
+# building this were invisible to unit tests and only appeared when the code
+# ran against a real Postgres: an auth middleware swallowing the payment
+# webhook, an enum with no state for money that had arrived but not reconciled,
+# a hash taken over jsonb that Postgres reorders on write. So CI runs the
+# migrations and the invariant proofs against a real database, every time.
+
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  static:
+    name: Typecheck and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+      - name: Typecheck the workspace
+        run: npx tsc --noEmit -p tsconfig.json
+      - name: Typecheck the mobile app
+        run: npm --prefix apps/mobile run typecheck
+      - name: Unit and route tests
+        run: npm test
+
+  database:
+    name: Migrations and invariant proofs
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: reharvest
+        ports: ['5432:5432']
+        # Without this the job starts before Postgres accepts connections.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/reharvest
+      AUTH_SIGNING_SECRET: ci-signing-secret-at-least-thirty-two-chars
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+
+      - name: Apply migrations from empty
+        run: npm run db:migrate
+
+      # Asserts that the CHECK constraints and append-only triggers actually
+      # refuse what they are supposed to refuse. A constraint nobody exercises
+      # is a comment.
+      - name: Prove the invariants hold
+        run: npm run db:proof
+
+      - name: Seed
+        run: npm run db:seed
+
+      - name: Boot the API and check it serves
+        run: |
+          PAYMOB_SECRET_KEY=sk_ci PAYMOB_PUBLIC_KEY=pk_ci PAYMOB_HMAC_SECRET=hmac_ci \
+          PORT=8787 npx tsx apps/api/src/index.ts &
+          for i in $(seq 1 30); do
+            sleep 2
+            curl -sf http://localhost:8787/health >/dev/null && break
+          done
+          curl -sf http://localhost:8787/health
+          curl -sf http://localhost:8787/ready
+          # The audit chain must verify on a fresh database.
+          curl -sf http://localhost:8787/internal/audit-integrity
+          # Unauthenticated access to trading data must be refused, not served.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8787/lots)" = "401"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8787/ops)" = "401"
+
+  bundle:
+    name: Mobile app bundles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+      # Catches a broken import or a missing asset before it reaches a phone.
+      - name: Expo export
+        run: npm run export:web
+        env:
+          CI: '1'
+          EXPO_NO_TELEMETRY: '1'

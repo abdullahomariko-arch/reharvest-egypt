@@ -18,6 +18,7 @@ import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { lots, orders, payments, parties, auditLog, orderTermVersions } from '@reharvest/db/schema';
 import { ServiceError, type LotService } from '../../api/src/service/lot-order-service.ts';
 import { verifyAuditChain } from '../../api/src/repo/payment-postgres.ts';
+import { allocatePayment, approvePayout } from '../../api/src/repo/allocation.ts';
 import type { Principal } from '../../api/src/auth.ts';
 import { layout, instrument, table, empty, pill, blockCard, esc, egpStr, kgStr, ago } from './layout.ts';
 
@@ -353,7 +354,10 @@ export function buildOpsConsole(deps: OpsDeps) {
       .orderBy(desc(payments.createdAt))
       .limit(100);
 
+    const flash = flashFor(c);
+
     const body = `
+      ${flash}
       <div class="note">
         Money in this queue has cleared at the payment provider and is really in the merchant account.
         It has not been attributed to an order, so it must never be counted as a paid deposit.
@@ -437,7 +441,10 @@ export function buildOpsConsole(deps: OpsDeps) {
       .orderBy(desc(payments.createdAt))
       .limit(50);
 
+    const flash = flashFor(c);
+
     const body = `
+      ${flash}
       <div class="note">
         A payout needs two different people: one to prepare it, another to approve it.
         The database refuses a row where those are the same person, so this is not merely a screen rule.
@@ -446,7 +453,7 @@ export function buildOpsConsole(deps: OpsDeps) {
       ${
         rows.length
           ? table(
-              ['Settlement', 'Amount', 'State', 'Prepared by', 'Approved by', 'Created'],
+              ['Settlement', 'Amount', 'State', 'Prepared by', 'Approved by', 'Created', ''],
               rows.map(
                 (p) => `<tr>
                   <td class="mono">${esc(p.idempotencyKey)}</td>
@@ -455,6 +462,13 @@ export function buildOpsConsole(deps: OpsDeps) {
                   <td class="mono">${esc(p.preparedBy.slice(0, 8))}</td>
                   <td class="mono">${p.approvedBy ? esc(p.approvedBy.slice(0, 8)) : pill('awaiting', 'warn')}</td>
                   <td class="mono">${esc(ago(p.createdAt))}</td>
+                  <td>${
+                    p.state === 'PENDING_APPROVAL'
+                      ? `<form class="inline" method="post" action="/ops/payouts/${esc(p.id)}/approve">
+                           <button class="btn primary" type="submit">Approve</button>
+                         </form>`
+                      : ''
+                  }</td>
                 </tr>`,
               ),
             )
@@ -465,10 +479,88 @@ export function buildOpsConsole(deps: OpsDeps) {
     return c.html(layout({ title: 'Payouts', active: 'payouts', counts: cts, body }));
   });
 
+  /**
+   * Allocate an unattributed payment to an order. This is the human resolution
+   * of the case the webhook could not resolve, so it carries the same rules and
+   * writes the same audit entry.
+   */
+  app.post('/ops/payments/:id/allocate', async (c) => {
+    const p = who(c);
+    const form = await c.req.parseBody();
+    const orderCode = String(form.orderCode ?? '');
+
+    try {
+      const r = await allocatePayment(deps.db, {
+        paymentId: c.req.param('id'),
+        orderCode,
+        actor: p,
+        at: new Date().toISOString(),
+      });
+      const msg = r.orderAdvanced
+        ? `Allocated ${egpStr(r.amountPiastres)} EGP to ${r.orderCode}. The deposit is covered and the order has moved.`
+        : `Allocated ${egpStr(r.amountPiastres)} EGP to ${r.orderCode}. Still short of the ${egpStr(r.depositDuePiastres)} EGP deposit, so the order has not moved.`;
+      return c.redirect(`/ops/payments?done=${encodeURIComponent(msg)}`);
+    } catch (e) {
+      return c.redirect(`/ops/payments?blocked=${encodeURIComponent(serialiseBlock(e))}`);
+    }
+  });
+
+  /** Approve an outbound payout. Refuses self-approval in words, not in SQL errors. */
+  app.post('/ops/payouts/:id/approve', async (c) => {
+    const p = who(c);
+    try {
+      const r = await approvePayout(deps.db, {
+        paymentId: c.req.param('id'),
+        actor: p,
+        at: new Date().toISOString(),
+      });
+      return c.redirect(
+        `/ops/payouts?done=${encodeURIComponent(`Approved ${egpStr(r.amountPiastres)} EGP for release.`)}`,
+      );
+    } catch (e) {
+      return c.redirect(`/ops/payouts?blocked=${encodeURIComponent(serialiseBlock(e))}`);
+    }
+  });
+
   return app;
 }
 
 /* ------------------------------------------------------------------ */
+
+/** Turns a service refusal into the payload the block card renders. */
+function serialiseBlock(e: unknown): string {
+  if (e instanceof ServiceError) {
+    return JSON.stringify({
+      message: e.message,
+      correction: e.correctionPath,
+      domainId: e.domainId,
+      reasonCode: e.reasonCode,
+    });
+  }
+  // An unexpected failure still has to say something useful to a finance clerk
+  // standing in front of the screen, rather than a stack trace.
+  return JSON.stringify({
+    message: 'That did not go through.',
+    correction: 'Nothing was changed. Try again, and if it keeps failing send this screen to engineering.',
+    domainId: 'D51',
+    reasonCode: 'UNEXPECTED_FAILURE',
+  });
+}
+
+function flashFor(c: any): string {
+  const done = c.req.query('done');
+  const blocked = c.req.query('blocked');
+  let out = '';
+  if (done) out += `<div class="good">${esc(done)}</div>`;
+  if (blocked) {
+    try {
+      out += blockCard(JSON.parse(blocked));
+    } catch {
+      /* a malformed query string is not worth an error page */
+    }
+  }
+  return out;
+}
 
 function kv(k: string, v: string): string {
   return `<tr><td style="width:200px;color:var(--muted)">${esc(k)}</td><td>${v}</td></tr>`;
