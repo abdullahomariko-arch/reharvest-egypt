@@ -25,6 +25,7 @@ import { LotService, OrderService } from './service/lot-order-service.ts';
 import { PaymentService } from './service/payment-service.ts';
 import { createLotRepo, createOrderRepo } from './repo/postgres.ts';
 import { createPaymentOrderRepo, createPaymentRepo, verifyAuditChain } from './repo/payment-postgres.ts';
+import { buildOpsConsole } from '../../admin/src/routes.ts';
 import { PaymobClient } from '@reharvest/payments/paymob';
 import { buildP0Registry } from '@reharvest/core/guard';
 
@@ -162,6 +163,22 @@ export function buildServer(config: Config) {
       // belongs to the transport module, which is deliberately out of scope.
       distanceKm: () => 28,
       originName: (lot) => lot.supplierId,
+    }),
+  );
+
+  /*
+    The ops console is served by the same process as the API, on purpose. It
+    calls the same services, so an ops manager quarantining a lot travels the
+    identical code path as an inspector doing it from the phone — there is no
+    admin back door that skips the rules.
+  */
+  app.route(
+    '/',
+    buildOpsConsole({
+      db,
+      lots: new LotService(lotRepo, clock),
+      authenticate,
+      concentrationCeilingPct: 35,
     }),
   );
 
