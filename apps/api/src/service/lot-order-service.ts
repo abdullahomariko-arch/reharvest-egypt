@@ -19,6 +19,8 @@
  *   D31     — a frozen lot is not tradeable by anyone, at any level.
  */
 
+import { randomBytes } from 'node:crypto';
+
 import { Money, egp } from '@reharvest/core/money';
 import {
   Qty,
@@ -172,6 +174,11 @@ export class LotService {
     private readonly repo: LotRepo,
     private readonly clock: Clock,
   ) {}
+
+  /** The stored lot, for authorisation checks that must not trust the request. */
+  async byId(lotId: string): Promise<LotRow | null> {
+    return this.repo.byId(lotId);
+  }
 
   async list(opts: { supplierId?: string; forBuyers?: boolean }): Promise<LotRow[]> {
     const rows = await this.repo.list({
@@ -414,11 +421,28 @@ export class LotService {
   }
 }
 
+/**
+ * Human-facing codes.
+ *
+ * These get read down a phone line and written on a delivery note, so they use
+ * an unambiguous alphabet: no I/O/0/1, which are the characters people mishear
+ * and mistype. Six characters of that alphabet is about a billion combinations
+ * per day, which matters because the previous version used three random digits
+ * — 900 per day — and started colliding on the unique index within a few dozen
+ * lots. A collision here is a failed order for a real buyer.
+ */
+const CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+
+function codeSuffix(length = 8): string {
+  const bytes = randomBytes(length);
+  let out = '';
+  for (let i = 0; i < length; i += 1) out += CODE_ALPHABET[bytes[i] % CODE_ALPHABET.length];
+  return out;
+}
+
 function lotCode(crop: string, isoNow: string): string {
   const d = isoNow.slice(0, 10).replace(/-/g, '');
-  const tag = crop.slice(0, 3).toUpperCase();
-  const seq = Math.floor(Math.random() * 900 + 100);
-  return `LOT-${d}-${tag}-${seq}`;
+  return `LOT-${d}-${crop.slice(0, 3).toUpperCase()}-${codeSuffix()}`;
 }
 
 /* ------------------------------------------------------------------ *
@@ -543,9 +567,7 @@ export class OrderService {
 }
 
 function orderCode(isoNow: string): string {
-  const d = isoNow.slice(0, 10).replace(/-/g, '');
-  const seq = Math.floor(Math.random() * 900 + 100);
-  return `ORD-${d}-${seq}`;
+  return `ORD-${isoNow.slice(0, 10).replace(/-/g, '')}-${codeSuffix()}`;
 }
 
 export { availableToPromise, Qty, FROZEN_LOT_STATES, SELLABLE_STATES };

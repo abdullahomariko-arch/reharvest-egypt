@@ -61,6 +61,10 @@ export const paymentState = pgEnum('payment_state', [
      to an order. RECEIVED is short or unconfirmed; UNMATCHED quotes an order
      code we do not recognise. Neither may advance an order. */
   'RECEIVED', 'UNMATCHED',
+  /* Attached to an order and no longer allocatable, whether or not it covered
+     the deposit on its own. Separating this from CLEARED is what makes partial
+     payments accumulate correctly. */
+  'RECONCILED',
 ]);
 
 export const holdKind = pgEnum('hold_kind', [
@@ -103,7 +107,16 @@ export const beneficiaries = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     partyId: uuid('party_id').notNull().references(() => parties.id),
     channel: text('channel').notNull(), // wallet | bank
+    /**
+     * AES-256-GCM ciphertext, sealed to this row's id via additional
+     * authenticated data. The IV and key id below are required to open it;
+     * without the binding, a complete encrypted value could be moved between
+     * beneficiaries and would still decrypt.
+     */
     accountNumberEnc: text('account_number_enc').notNull(),
+    accountNumberIv: text('account_number_iv'),
+    /** Which key sealed this row, so keys rotate without a flag day. */
+    encryptionKeyId: text('encryption_key_id'),
     accountTail: text('account_tail').notNull(),
     bankCode: text('bank_code'),
     holderName: text('holder_name').notNull(),
@@ -303,6 +316,11 @@ export const payments = pgTable(
     bankReference: text('bank_reference'),
     payerNameObserved: text('payer_name_observed'),
     clearedAt: timestamp('cleared_at', { withTimezone: true }),
+    /** When this payment was attached to an order, and by whom. */
+    reconciledAt: timestamp('reconciled_at', { withTimezone: true }),
+    /** When the transfer was handed to the provider. Set = money in flight. */
+    submittedAt: timestamp('submitted_at', { withTimezone: true }),
+    reconciledBy: uuid('reconciled_by'),
     reversedAt: timestamp('reversed_at', { withTimezone: true }),
     preparedBy: uuid('prepared_by').notNull(),
     approvedBy: uuid('approved_by'),

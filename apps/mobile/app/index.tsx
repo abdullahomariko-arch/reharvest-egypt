@@ -14,7 +14,7 @@ import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
 import AppShell, { type ScreenId } from '../src/navigation/AppShell';
 import { useSession } from '../src/session';
 import { useT } from '../src/i18n/index';
-import { api, BlockedByRule, ApiError, type WireLot } from '../src/api/client';
+import { api, BlockedByRule, ApiError, type WireLot, type WireOrder } from '../src/api/client';
 import { egp } from '@reharvest/core/money';
 import { grams, CRATE_SPECS } from '@reharvest/core/quantity';
 import { color, space, type } from '../src/ui/theme';
@@ -40,6 +40,8 @@ export default function Index() {
   const [refreshing, setRefreshing] = useState(false);
   const [selectedLotId, setSelectedLotId] = useState<string | null>(null);
   const [activeOrder, setActiveOrder] = useState<string | null>(null);
+  /** The server's figures for the active order. Never recomputed here. */
+  const [orderTotals, setOrderTotals] = useState<WireOrder | null>(null);
 
   const load = useCallback(async () => {
     if (!session) return;
@@ -188,6 +190,9 @@ export default function Index() {
                 quantityGrams: input.quantity.value.toString(),
               });
               setActiveOrder(order.orderCode);
+              // Re-read rather than trusting the create response, so checkout
+              // always shows what the server currently believes is owed.
+              setOrderTotals(await api.getOrder(session.token, order.orderCode));
               navigate('buy.checkout');
             }}
           />
@@ -195,13 +200,20 @@ export default function Index() {
 
       case 'buy.checkout':
         if (!activeOrder || !selected) return <Empty label={t('err.noOrder')} />;
+        /*
+          Amounts come from the order the server created, not from anything this
+          screen recomputed. The previous version passed the lot's price-per-kg
+          as both the total and the deposit — wrong on its face, and wrong in
+          principle: a client that computes what it owes is a client that can be
+          persuaded to owe less.
+        */
         return (
           <CheckoutScreen
             orderCode={activeOrder}
             cropAr={t(`crop.${selected.crop}`)}
             quantityLabelAr={t('detail.available')}
-            totalDue={egp.fromPiastres(BigInt(selected.pricePerKgPiastres))}
-            depositDue={egp.fromPiastres(BigInt(selected.pricePerKgPiastres))}
+            totalDue={egp.fromPiastres(BigInt(orderTotals?.totalPiastres ?? '0'))}
+            depositDue={egp.fromPiastres(BigInt(orderTotals?.depositPiastres ?? '0'))}
             deliveryWindowAr={new Date(selected.collectBy).toLocaleDateString()}
             availableMethods={['wallet', 'card', 'kiosk_cash']}
             startPayment={async () => {

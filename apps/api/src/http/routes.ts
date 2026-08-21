@@ -10,52 +10,76 @@
  */
 
 import { Hono } from 'hono';
+
+/** Typed context so `principal` is not a stringly-typed hole in every handler. */
+type Vars = {
+  principal: { userId: string; partyId?: string; roles: string[] };
+  idempotencyScopedKey: string;
+  idempotencyApplied: boolean;
+};
 import type { PaymentService } from '../service/payment-service.ts';
 import { ControlBlocked } from '@reharvest/core/guard';
 import { TransitionDenied } from '@reharvest/core/state-machines';
-
-export interface IdempotencyStore {
-  get(key: string): Promise<{ status: number; body: unknown } | null>;
-  put(key: string, value: { status: number; body: unknown }): Promise<void>;
-}
+import { idempotencyMiddleware } from './idempotency-middleware.ts';
+import type { IdempotencyStore } from '../repo/idempotency.ts';
 
 export interface RouteDeps {
   readonly payments: PaymentService;
   readonly idempotency: IdempotencyStore;
-  readonly authenticate: (req: Request) => Promise<{ userId: string; roles: string[] } | null>;
+  readonly authenticate: (req: Request) => Promise<{ userId: string; partyId?: string; roles: string[] } | null>;
+  /** The party that placed an order, for the ownership check. */
+  readonly ownerOfOrder: (orderCode: string) => Promise<string | null>;
 }
 
 export function buildRoutes(deps: RouteDeps) {
-  const app = new Hono();
+  const app = new Hono<{ Variables: Vars }>();
 
   /* -------------------------------------------------------------- *
-   * Idempotency. Any non-GET carrying the header replays its first
-   * response rather than executing again. (D53.)
+   * Authentication, then idempotency — in that order.
+   *
+   * The webhook is deliberately excluded from both: Paymob authenticates by
+   * HMAC signature and cannot hold a bearer token or choose a key. Mounting
+   * auth on '*' here is what previously swallowed every callback with a 401.
    * -------------------------------------------------------------- */
-  app.use('*', async (c, next) => {
-    const key = c.req.header('Idempotency-Key');
-    if (!key || c.req.method === 'GET') return next();
 
-    const cached = await deps.idempotency.get(key);
-    if (cached) {
-      c.header('Idempotent-Replay', 'true');
-      return c.json(cached.body as object, cached.status as 200);
-    }
+  const authed = ['/orders/*', '/settlements/*'];
 
-    await next();
-
-    if (c.res.status < 500) {
-      const body = await c.res.clone().json().catch(() => null);
-      await deps.idempotency.put(key, { status: c.res.status, body });
-    }
-  });
+  for (const path of authed) {
+    app.use(path, async (c, next) => {
+      const p = await deps.authenticate(c.req.raw);
+      if (!p) return c.json({ error: 'unauthenticated' }, 401);
+      c.set('principal', p);
+      await next();
+    });
+    app.use(
+      path,
+      idempotencyMiddleware({
+        idempotency: deps.idempotency,
+        actorOf: (c) => c.get('principal') ?? null,
+      }),
+    );
+  }
 
   /* -------------------------------------------------------------- *
    * Buyer starts a deposit.
    * -------------------------------------------------------------- */
   app.post('/orders/:code/deposit-intention', async (c) => {
-    const auth = await deps.authenticate(c.req.raw);
-    if (!auth) return c.json({ error: 'unauthenticated' }, 401);
+    /*
+      Ownership before anything else. Without it, one buyer could open a deposit
+      against another buyer's order — learning its amount, and paying into it.
+    */
+    const actor = c.get('principal');
+    const owner = await deps.ownerOfOrder(c.req.param('code'));
+    if (!owner) return c.json({ error: 'not_found' }, 404);
+    if (
+      owner !== (actor as { partyId?: string }).partyId &&
+      !actor.roles.some((r) => ['ops_agent', 'ops_manager', 'finance'].includes(r))
+    ) {
+      return c.json(
+        { error: 'forbidden', reasonCode: 'NOT_YOUR_ORDER', message: 'That order is not available to you.' },
+        403,
+      );
+    }
 
     const body = await c.req.json<{ completedOrders: number; hasVerifiedBankAccount: boolean }>();
 
@@ -109,12 +133,8 @@ export function buildRoutes(deps: RouteDeps) {
    * who is not the caller; the service enforces the second condition.
    * -------------------------------------------------------------- */
   app.post('/settlements/:id/pay', async (c) => {
-    const auth = await deps.authenticate(c.req.raw);
-    if (!auth) return c.json({ error: 'unauthenticated' }, 401);
+    const auth = c.get('principal');
     if (!auth.roles.includes('finance')) return c.json({ error: 'forbidden' }, 403);
-    if (!c.req.header('Idempotency-Key')) {
-      return c.json({ error: 'Idempotency-Key header is required for irreversible actions' }, 400);
-    }
 
     const body = await c.req.json();
 

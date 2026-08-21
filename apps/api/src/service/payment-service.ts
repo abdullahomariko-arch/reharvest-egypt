@@ -133,6 +133,17 @@ export function methodsFor(
 
 export interface PaymentServiceDeps {
   readonly paymob: PaymobClient;
+  /**
+   * Runs recording, order advancement and the audit write as one unit.
+   *
+   * Without this they were three separate transactions. If the order advance
+   * failed after the payment row was written, the payment existed, the order
+   * did not move, and every retry was dismissed as a duplicate — money taken,
+   * produce never released, and no error anywhere pointing at it.
+   *
+   * Optional so the in-memory tests can supply a pass-through.
+   */
+  readonly transact?: <T>(fn: (repos: { orders: OrderRepo; payments: PaymentRepo }) => Promise<T>) => Promise<T>;
   readonly config: PaymobConfig;
   readonly orders: OrderRepo;
   readonly payments: PaymentRepo;
@@ -140,6 +151,9 @@ export interface PaymentServiceDeps {
   readonly clock: Clock;
   readonly matchPolicy?: MatchPolicy;
 }
+
+/** Order states in which a deposit is still outstanding. */
+const AWAITING_DEPOSIT: readonly OrderState[] = ['DEPOSIT_PENDING', 'CONDITIONAL', 'QUOTED', 'INTEREST'];
 
 export type WebhookResult =
   | { outcome: 'order_advanced'; orderCode: string; to: OrderState }
@@ -207,12 +221,20 @@ export class PaymentService {
       this.deps.config.hmacSecret,
     );
 
-    // Gate 2 — replay. Paymob retries on any non-2xx, and a phone on a bad
-    // connection can trigger several callbacks for one payment.
+    /*
+      Gate 2 — replay.
+
+      A recorded payment is NOT on its own proof the work finished. Recording
+      and advancing used to be separate transactions, so a failure between them
+      left the payment written and the order untouched; this gate then dismissed
+      every retry as a duplicate and the order stayed unpaid forever.
+
+      So the question is not "have we seen this transaction" but "did the work
+      complete". If the payment exists and the order has moved, it is a genuine
+      duplicate. If the payment exists and the order has not moved, this retry
+      is the repair and must be allowed through.
+    */
     const existing = await this.deps.payments.findByProviderTransactionId(verified.providerTransactionId);
-    if (existing) {
-      return { outcome: 'ignored_duplicate', providerTransactionId: verified.providerTransactionId };
-    }
 
     if (!verified.success || verified.pending) {
       return {
@@ -223,6 +245,12 @@ export class PaymentService {
     }
 
     const order = await this.deps.orders.findByCode(verified.merchantOrderId);
+
+    if (existing && order && !AWAITING_DEPOSIT.includes(order.state)) {
+      // Recorded, and the order has already moved. A true duplicate delivery.
+      return { outcome: 'ignored_duplicate', providerTransactionId: verified.providerTransactionId };
+    }
+
     if (!order) {
       // Money arrived for an order we do not have. Never silently drop it.
       await this.deps.payments.markUnmatched(
@@ -266,18 +294,20 @@ export class PaymentService {
       this.deps.matchPolicy ?? DEFAULT_MATCH_POLICY,
     );
 
-    await this.deps.payments.recordInbound({
-      providerTransactionId: verified.providerTransactionId,
-      orderCode: order.orderCode,
-      amount: verified.amount,
-      method: verified.method,
-      payerNameObserved: credit.payerName,
-      bankReference: credit.bankReference,
-      clearedAt: decision.status === 'cleared' ? verified.occurredAt : null,
-      purpose: 'deposit',
-    });
-
     if (decision.status !== 'cleared') {
+      // Money that did not reconcile is still recorded, on its own, so finance
+      // can see it. Nothing advances, so there is nothing to keep atomic.
+      await this.deps.payments.recordInbound({
+        providerTransactionId: verified.providerTransactionId,
+        orderCode: order.orderCode,
+        amount: verified.amount,
+        method: verified.method,
+        payerNameObserved: credit.payerName,
+        bankReference: credit.bankReference,
+        clearedAt: null,
+        purpose: 'deposit',
+      });
+
       const reasonCode = decision.status === 'partial' ? 'DEPOSIT_SHORT' : decision.reasonCode;
       const message =
         decision.status === 'partial'
@@ -299,11 +329,33 @@ export class PaymentService {
 
     const to = orderMachine.next(order.state, 'deposit_cleared', ctx);
 
-    await this.deps.orders.advance(order.orderCode, to, {
-      actorId: ctx.actorId,
-      reasonCode: 'DEPOSIT_CLEARED',
-      providerTransactionId: verified.providerTransactionId,
-      at: ctx.at,
+    /*
+      One unit of work: record the money, move the order, write the audit entry.
+
+      If any part fails the whole thing rolls back, so the payment row does not
+      exist either — which means the retry is not mistaken for a duplicate and
+      genuinely repairs the operation.
+    */
+    const run = this.deps.transact ?? ((fn) => fn({ orders: this.deps.orders, payments: this.deps.payments }));
+
+    await run(async (repos) => {
+      await repos.payments.recordInbound({
+        providerTransactionId: verified.providerTransactionId,
+        orderCode: order.orderCode,
+        amount: verified.amount,
+        method: verified.method,
+        payerNameObserved: credit.payerName,
+        bankReference: credit.bankReference,
+        clearedAt: verified.occurredAt,
+        purpose: 'deposit',
+      });
+
+      await repos.orders.advance(order.orderCode, to, {
+        actorId: ctx.actorId,
+        reasonCode: 'DEPOSIT_CLEARED',
+        providerTransactionId: verified.providerTransactionId,
+        at: ctx.at,
+      });
     });
 
     return { outcome: 'order_advanced', orderCode: order.orderCode, to };

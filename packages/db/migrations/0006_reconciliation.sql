@@ -1,0 +1,23 @@
+-- 0006_reconciliation.sql
+--
+-- Fixes two defects reproduced through the HTTP routes.
+--
+-- DEFECT 1: partial payments never accumulated.
+--   Allocating 1,000 then 1,100 against a 2,100 deposit left the order unpaid.
+--   The coverage sum counted only CLEARED payments, but a payment short of the
+--   deposit was left as RECEIVED, so it was never counted. The buyer had paid
+--   in full across two transfers and the order sat pending.
+--
+-- DEFECT 2: one payment could clear two orders.
+--   Two concurrent allocations of the same payment to different orders both
+--   succeeded. 2,100 EGP released 4,200 EGP of produce.
+--
+-- The root cause of both is conflating two different facts:
+--   "this payment has been attached to an order"  (reconciliation)
+--   "this order's deposit is now covered"          (coverage)
+--
+-- They are now separate. RECONCILED means attached and no longer allocatable,
+-- whether or not it covered anything. Coverage is computed by summing every
+-- reconciled payment against the order.
+
+ALTER TYPE payment_state ADD VALUE IF NOT EXISTS 'RECONCILED';

@@ -9,6 +9,7 @@
     "./invariants": "./src/invariants.ts",
     "./state-machines": "./src/state-machines.ts",
     "./guard": "./src/guard.ts",
-    "./controls": "./src/controls.generated.ts"
+    "./controls": "./src/controls.generated.ts",
+    "./crypto": "./src/crypto.ts"
   }
 }

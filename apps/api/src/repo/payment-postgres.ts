@@ -81,8 +81,27 @@ export interface AuditEntryInput {
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  const keys = Object.keys(value as Record<string, unknown>).sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`).join(',')}}`;
+
+  const record = value as Record<string, unknown>;
+  /*
+    Undefined keys are dropped, matching what jsonb does.
+
+    `{ providerTransactionId: 'x', failureReason: undefined }` hashed as
+    `failureReason: null` on the way in, but Postgres stored the key not at all
+    and returned `{ providerTransactionId: 'x' }` — a different string, a
+    different hash, and an integrity check reporting tampering on an untouched
+    chain.
+
+    That is the third defect of this exact shape (after jsonb reordering keys
+    and timestamps gaining milliseconds). The rule they all point at: anything
+    hashed here must round-trip through Postgres byte-identical, so the hash is
+    taken over the *stored* form rather than the in-memory one.
+  */
+  const keys = Object.keys(record)
+    .filter((k) => record[k] !== undefined)
+    .sort();
+
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(record[k])}`).join(',')}}`;
 }
 
 /** Canonical serialisation. Field order is fixed, or the same entry hashes
@@ -90,7 +109,18 @@ function stableStringify(value: unknown): string {
 function canonicalise(prevHash: string, e: AuditEntryInput): string {
   return JSON.stringify([
     prevHash,
-    e.at,
+    /*
+      Normalised, because the value that goes in is not the value that comes
+      back. A caller passing '2026-08-18T09:00:00Z' has it stored as a
+      timestamptz and re-read as '2026-08-18T09:00:00.000Z' — different strings,
+      different hash, and the integrity check reports tampering on a chain that
+      is perfectly intact.
+
+      Every field hashed here must survive the database round trip unchanged.
+      This is the second instance of that same class of bug; the first was jsonb
+      reordering object keys.
+    */
+    new Date(e.at).toISOString(),
     e.actorId,
     stableStringify([...e.actorRoles].sort()),
     e.action,
@@ -104,7 +134,41 @@ function canonicalise(prevHash: string, e: AuditEntryInput): string {
   ]);
 }
 
-export async function appendAudit(tx: Db, entry: AuditEntryInput): Promise<void> {
+/**
+ * Appends an entry, taking its own transaction if it was not given one.
+ *
+ * `pg_advisory_xact_lock` is released at the end of the surrounding
+ * transaction. Called on a plain connection each statement is its own
+ * transaction, so the lock would be released before the insert it was meant to
+ * protect — the guard would appear present and do nothing. Two call sites did
+ * exactly that.
+ */
+export async function appendAudit(db: Db, entry: AuditEntryInput): Promise<void> {
+  const inTransaction = (db as unknown as { transaction?: unknown }).transaction === undefined;
+  if (inTransaction) return appendAuditInTx(db, entry);
+  return db.transaction(async (tx) => appendAuditInTx(tx as unknown as Db, entry));
+}
+
+async function appendAuditInTx(tx: Db, entry: AuditEntryInput): Promise<void> {
+  /*
+    Serialise appends across every instance.
+
+    Reading the chain tip and inserting the next link are two statements, and
+    two processes doing that concurrently both read the same tip and both chain
+    from it. The chain forks, and the integrity check then reports tampering
+    that never happened — which is worse than no check at all, because it
+    trains people to ignore the alarm.
+
+    Found on a fresh database with two API instances running the integration
+    suites: the chain broke at sequence 16. A long-lived development database
+    with one instance had never surfaced it.
+
+    A transaction-scoped advisory lock is the right tool: it is released
+    automatically on commit or rollback, so a crash mid-append cannot wedge the
+    audit log for everyone.
+  */
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('reharvest_audit_chain'))`);
+
   const [prev] = await tx
     .select({ seq: auditLog.seq, hash: auditLog.hash })
     .from(auditLog)
@@ -302,9 +366,15 @@ export function createPaymentRepo(db: Db): PaymentRepo {
           partyId: o?.buyerId ?? SYSTEM_PARTY,
           amountPiastres: p.amount.amount,
           method: p.method,
-          // A payment that reconciled is CLEARED; one that did not is recorded
-          // as RECEIVED and waits for a human. It is never silently discarded.
+          /*
+            CLEARED means matched by the webhook and counted toward the order.
+            RECEIVED means the money is real but not yet attached to anything —
+            it stays in the ops queue for a person to allocate. Both are counted
+            by the coverage sum only once they carry an order_id, which RECEIVED
+            does not.
+          */
           state: (p.clearedAt ? 'CLEARED' : 'RECEIVED') as never,
+          reconciledAt: p.clearedAt ? new Date(p.clearedAt) : null,
           providerTransactionId: p.providerTransactionId,
           bankReference: p.bankReference,
           payerNameObserved: p.payerNameObserved,
@@ -313,7 +383,29 @@ export function createPaymentRepo(db: Db): PaymentRepo {
           idempotencyKey: `inbound:${p.providerTransactionId}`,
         })
         // A retried webhook must not create a second payment row.
-        .onConflictDoNothing({ target: payments.idempotencyKey });
+        /*
+          Upsert on the provider's transaction id, which is the natural key for
+          "this specific movement of money at Paymob".
+
+          DO NOTHING was wrong here. When a webhook is repairing an order that
+          was left stuck — payment recorded, order never advanced — the row
+          already exists, and DO NOTHING made the repair fail on the unique
+          index instead of completing. Recording the same provider transaction
+          twice must converge on one row that reflects the latest known state,
+          not error and not duplicate.
+        */
+        .onConflictDoUpdate({
+          target: payments.providerTransactionId,
+          set: {
+            orderId: sql`excluded.order_id`,
+            partyId: sql`excluded.party_id`,
+            state: sql`excluded.state`,
+            clearedAt: sql`excluded.cleared_at`,
+            reconciledAt: sql`excluded.reconciled_at`,
+            bankReference: sql`excluded.bank_reference`,
+            payerNameObserved: sql`excluded.payer_name_observed`,
+          },
+        });
     },
 
     /**
@@ -370,3 +462,26 @@ const SYSTEM_PARTY = '33333333-3333-4333-8333-333333333333';
 const SYSTEM_ACTOR = '00000000-0000-4000-8000-000000000000';
 
 export { DEPOSIT_BPS };
+
+/**
+ * Runs the deposit-settlement unit inside one Postgres transaction.
+ *
+ * The service takes this as its `transact` port. Everything the callback does —
+ * writing the payment, advancing the order, appending the audit entry — commits
+ * together or not at all. That is what makes a failed advance leave no payment
+ * row behind, which in turn is what lets Paymob's retry repair the operation
+ * instead of being dismissed as a duplicate.
+ */
+export function createWebhookTransactor(db: Db) {
+  return async <T>(
+    fn: (repos: { orders: OrderRepo; payments: PaymentRepo }) => Promise<T>,
+  ): Promise<T> => {
+    return db.transaction(async (tx) => {
+      const scoped = tx as unknown as Db;
+      return fn({
+        orders: createPaymentOrderRepo(scoped),
+        payments: createPaymentRepo(scoped),
+      });
+    });
+  };
+}

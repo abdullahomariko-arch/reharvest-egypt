@@ -14,6 +14,10 @@
 
 import postgres from 'postgres';
 import { issueToken } from '../../../apps/api/src/auth.ts';
+import { drizzle } from 'drizzle-orm/postgres-js';
+
+import { Keyring } from '../../core/src/crypto.ts';
+import { createBeneficiaryRepository } from '../../../apps/api/src/repo/beneficiary.ts';
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -60,15 +64,46 @@ async function main() {
     payout path ever breaks that rule, seeding this row is what makes it
     obvious in development rather than in production.
   */
-  await sql`
-    INSERT INTO beneficiaries (id, party_id, channel, account_number_enc, account_tail,
-                               bank_code, holder_name, effective_from)
-    VALUES (${ID.benNubaria}, ${ID.nubaria}, 'bank',
-            -- Encrypted at rest in production; a placeholder is fine for a seed.
-            'enc:placeholder', '7890', 'CIB', 'محطة فرز النوبارية',
-            now() - interval '6 hours')
-    ON CONFLICT (id) DO NOTHING;
-  `;
+  /*
+    Real encryption, even in the seed. A placeholder here would mean the
+    decryption path never runs in development, and the first time anyone
+    exercises it would be against a production bank account.
+  */
+  const keys = process.env.FIELD_ENCRYPTION_KEYS;
+  const ACCOUNT = '1234567890';
+
+  if (keys) {
+    /*
+      Through the repository, exactly as the application does.
+
+      A seed that writes the column directly is a second encryption
+      implementation that nobody maintains, and the first thing to drift when
+      the binding or the key format changes.
+    */
+    const repo = createBeneficiaryRepository(drizzle(sql), Keyring.fromEnv(keys));
+
+    const existing = await repo.currentForParty(ID.nubaria);
+    if (existing) {
+      console.log(`  beneficiary already present (tail ${existing.accountTail})`);
+    } else {
+      const created = await repo.record({
+        partyId: ID.nubaria,
+        channel: 'bank',
+        accountNumber: ACCOUNT,
+        holderName: 'محطة فرز النوبارية',
+        bankCode: 'CIB',
+        actorId: ID.userOps,
+        actorRoles: ['ops_manager'],
+        // Six hours ago on purpose: any payout against this supplier must be
+        // blocked by the 24-hour cooldown. Seeding the awkward case is what
+        // makes a broken rule obvious in development rather than in production.
+        at: new Date(Date.now() - 6 * 3600_000).toISOString(),
+      });
+      console.log(`  1 beneficiary (encrypted, tail ${created.accountTail})`);
+    }
+  } else {
+    console.log('  skipping beneficiary — FIELD_ENCRYPTION_KEYS not set');
+  }
 
   /*
     postgres.js will not bind a bigint parameter, so gram and piastre values are

@@ -1,193 +1,259 @@
 # Runbook
 
-Everything needed to get ReHarvest running, and how to tell whether it is
-actually working rather than merely starting.
+Everything needed to run ReHarvest, and how to tell whether it is actually
+working rather than merely starting.
 
-## First run
+## What this is
 
-```bash
-npm install                 # workspaces; ~1 minute
-npm test                    # 88 unit tests, no database needed
-npm run typecheck           # repo + mobile
-```
+| | |
+|---|---|
+| Files in the archive | 128 (166 tar entries — the remainder are directory records) |
+| Migrations | 15, `0000`–`0014` |
+| Unit tests | 149 across 42 suites |
+| Integration suites | 8, needing a real Postgres and two API instances |
+| Runtime | Compiled JavaScript. No TypeScript reaches the image |
 
-If `npm install` fails on a peer dependency, check `apps/mobile/package.json`
-first — React and React Native versions must be the pair Expo SDK 52 ships
-(React 18.3.1 / RN 0.76.5). A React 19 pin looks harmless and makes the install
-impossible.
+Earlier revisions of this document said "all four migrations" and quoted a file
+count that included directory entries. Both were wrong. The numbers above come
+from `git archive HEAD | tar -t` and `ls packages/db/migrations`.
 
-## Database
+## Installing
+
+There are two procedures and they are not interchangeable.
+
+### Fresh installation
 
 ```bash
 createdb reharvest
-export DATABASE_URL="postgres://localhost:5432/reharvest"
-npm run db:migrate          # all four migrations, in order
-npm run test:db             # 10 invariant proofs — must print 10 PASS
-npm run db:seed             # sample corridor + dev tokens
+export DATABASE_URL=postgres://…/reharvest
+export FIELD_ENCRYPTION_KEYS="v1:$(openssl rand -base64 32)"
+export AUTH_SIGNING_SECRET="$(openssl rand -base64 48)"
+
+npm ci
+npm run db:migrate      # fresh mode: all 15, including 0009
+npm run db:seed
 ```
 
-Migrations are ordered and not idempotent as a set — run them once, in order, on
-an empty database. `0001_invariants.sql` creates the `reharvest_app` role and
-revokes `UPDATE`/`DELETE` on `audit_log` and `weighings`; run it as the database
-owner, then point the application's `DATABASE_URL` at `reharvest_app`.
+`db:migrate` applies **every** migration, including `0009_encryption_mandatory`,
+so a new database finishes with `account_number_iv` and `encryption_key_id` set
+`NOT NULL`. A new database has no legacy rows, so there is nothing to backfill
+and no reason to leave the constraint off.
 
-`npm run test:db` is not optional. A CHECK constraint nobody exercised is a
-comment. If any of the ten proofs stops passing, an invariant has regressed and
-the deploy should stop.
+Confirm it took:
 
-## Running
+```sql
+SELECT attname, attnotnull FROM pg_attribute
+ WHERE attrelid = 'beneficiaries'::regclass
+   AND attname IN ('account_number_iv', 'encryption_key_id');
+-- both must be t
+```
+
+A previous arrangement left 0009 out of `db:migrate` entirely, so a fresh
+install quietly finished *without* mandatory encryption and nobody was told.
+
+### Upgrading an existing database
 
 ```bash
-cp .env.example .env        # fill in AUTH_SIGNING_SECRET and the Paymob keys
-npm run dev:api             # :8787
+npm run db:migrate:upgrade    # everything except 0009
+
+npx tsx scripts/beneficiary-keys.ts status
+# for each row listed:
+npx tsx scripts/beneficiary-keys.ts backfill --id <uuid> --account <number>
+
+npx tsx scripts/beneficiary-keys.ts verify     # prove every row opens
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/db/migrations/0009_encryption_mandatory.sql
 ```
 
-The server validates configuration at boot and refuses to start with anything
-missing. That is deliberate: a service that starts without an HMAC secret and
-discovers it when the first webhook arrives has turned a config error into a
-payment incident.
+0009 refuses to run while any beneficiary row is unencrypted, and names the
+command that fixes it. That ordering matters: run first, it fails the deploy at
+the worst moment, and the obvious workaround — dropping the constraint — leaves
+plaintext rows behind permanently.
 
-Generate the signing secret with `openssl rand -base64 48`. Anything under 32
-characters is rejected.
+The account number is passed to `backfill` explicitly rather than read from the
+column, because legacy rows hold a mixture of plaintext and the literal string
+`enc:placeholder` from an early seed. Guessing which is which encrypts a
+placeholder and then treats it as a real account.
 
-### Health endpoints
+## Configuration
 
-Two, not one, and the difference matters to a load balancer:
+The server validates all of this at boot and refuses to start if anything is
+wrong. A misconfiguration discovered while money is moving is the worst possible
+timing.
 
-| Endpoint | Touches the database | Used for |
-|---|---|---|
-| `/health` | no | restart decisions |
-| `/ready` | yes | routing decisions |
+### Encryption keys — required
 
-Wiring a restart check to `/ready` means one database blip restarts every
-healthy instance.
+```
+FIELD_ENCRYPTION_KEYS=v1:<base64>,v0:<base64>
+```
 
-## Verifying a deploy
+Comma separated, first is active, each **exactly 32 bytes** (AES-256) after
+base64 decoding. Generate with `echo "v1:$(openssl rand -base64 32)"`.
+
+Losing these means losing every bank account number on the platform. They belong
+in a secrets manager, not in the repository.
+
+When rotating, put the new key first and keep the old one listed until
+`npm run keys:rotate` reports nothing left to do. Removing a key that rows still
+reference makes those rows unreadable; `rotate` reports them as `unreadable` and
+exits non-zero rather than skipping them silently.
+
+### OTP provider — required in production
+
+```
+OTP_DRIVER=http-sms
+OTP_SMS_ENDPOINT=https://…
+OTP_SMS_API_KEY=…
+OTP_SMS_SENDER_ID=ReHarvest
+```
+
+`OTP_DRIVER=console` logs codes to stdout and is for development and CI only.
+Production refuses to start with it, and refuses to start with `http-sms` if any
+of the three settings are missing. Outside production the driver defaults to
+`console`.
+
+Deploying with real credentials is configuration, not a code change.
+
+### Disbursement provider
+
+```
+DISBURSEMENT_DRIVER=paymob      # or 'fake' outside production
+```
+
+`fake` records payouts to the `provider_calls` table instead of sending them, so
+tests can assert on what the provider actually received rather than on what the
+API said it would send. Production refuses it.
+
+### Everything else
+
+```
+DATABASE_URL
+AUTH_SIGNING_SECRET             # minimum 32 characters
+PAYMOB_SECRET_KEY / PAYMOB_PUBLIC_KEY / PAYMOB_HMAC_SECRET
+PORT                            # default 8787
+```
+
+## Running the tests
 
 ```bash
-API_URL=https://api.example.com AUTH_SIGNING_SECRET=... npm run test:e2e
+npm test                  # 149 unit tests
+npm run db:proof          # 10 SQL invariant proofs against a real Postgres
+
+# Integration: two instances on one database. The concurrency scenarios are
+# meaningless against a single process — a per-process cache looks correct
+# until there are two of them.
+PORT=9001 npx tsx apps/api/src/index.ts &
+PORT=9002 npx tsx apps/api/src/index.ts &
+OTP_LOG=/path/to/9001.log npm run test:integration
 ```
 
-Sixteen checks over real HTTP: the full intake path, the refusals, the status
-codes, and the two idempotency behaviours. Exits non-zero on any failure, so it
-works as a deploy gate. Keys are namespaced per run, so it is safe to run
-repeatedly against the same environment.
+`test:integration` discovers and runs all 8 suites and exits non-zero on
+failure. It previously only printed instructions and exited 0, which looks
+exactly like a passing suite in a CI log.
 
-What it proves that the unit tests cannot:
-
-- money and weight survive JSON as integer strings, not doubles
-- a rule refusal is 422 with a correction path, so the app renders a block
-  instead of retrying forever
-- a lost race is 409, so the client refreshes instead of giving up
-- a replayed order returns the original order rather than being refused for
-  stock its own first attempt took
-- a quarantined lot disappears from the buyer market entirely
-
-## The mobile app
-
-```bash
-cd apps/mobile
-npx expo start              # scan with Expo Go
-npm run export              # web bundle, useful as a smoke test
-```
-
-`metro.config.js` carries the monorepo wiring. Without `watchFolders` Metro
-cannot see `packages/core`; without `disableHierarchicalLookup` it resolves two
-copies of React and the app white-screens with a confusing hook error.
-
-Fonts live in `apps/mobile/assets/fonts` as TTF. React Native cannot load woff2,
-so if the Arabic renders in the system face, check the conversion rather than the
-stylesheet.
-
-## Known limits before scaling
-
-**The idempotency store is in-memory.** Correct for one instance, wrong for two:
-instances behind a load balancer will not see each other's replays, so a retried
-request can execute twice. Move it to Redis or a Postgres table before adding a
-second instance. This is the single most important item on this list.
-
-**Distance is a stub.** `distanceKm` returns 28 for everything. Road distance
-belongs to the transport module, which is deliberately out of scope.
-
-**Grade is hardcoded to B** in the wire mapping. It needs to come from the
-inspection record.
-
-**The payment service is wired to stub repositories** in `index.ts`. The service
-itself is fully tested; the Postgres implementations behind `OrderRepo` and
-`PaymentRepo` for the payment path still need writing.
-
-## Before production
-
-Four things need qualified Egyptian professionals, not a developer:
-
-1. **NFSA** — food safety duties for a business handling produce
-2. **ETA** — e-invoicing and tax treatment of a managed trading margin
-3. **Legal** — the supplier and buyer contract forms
-4. **CBE** — whether the trading structure needs a payment licence or can
-   operate as merchant of record
-
-The 87% loss-reduction figure in the original handoff is a synthetic model
-output. It is useful for deciding what to build first and is not evidence of
-anything. Do not put it in front of an investor as a result.
-
-
-## Ops console
-
-The console is served by the API process at `/ops`. There is no separate
-deployment, and no separate build step — it is server-rendered HTML.
-
-| Page | What it is for |
+| Suite | Covers |
 |---|---|
-| `/ops` | Exposure, buyer concentration against the ceiling, and today's decisions |
-| `/ops/lots` | Every lot, its state, and what is actually available to promise |
-| `/ops/orders` | Orders with value and deposit due |
-| `/ops/payments` | Money that cleared at the provider but is not attributed to an order |
-| `/ops/payouts` | Outbound settlements awaiting a second approver |
-| `/ops/audit` | The hash-chained log, with a live integrity check |
+| `idempotency.http` | key scoping, body hashing, two instances racing |
+| `allocation.http` | partial accumulation, concurrent allocation of one payment |
+| `webhook-atomicity.http` | repair after a failed order advance |
+| `beneficiary.pg` | encryption, record binding, rotation, backfill, HTTP paths |
+| `session-csrf.http` | cookie flags, CSRF, logout revocation |
+| `ownership.http` | role and record ownership |
+| `auth-otp.http` | mobile sign-in |
+| `payout.http` | the full payout lifecycle |
 
-Access needs an `ops_agent`, `ops_manager`, `finance` or `executive` role. A
-supplier or buyer with a perfectly valid token gets a 403, not a redirect —
-they should never see the whole book.
+## Payout lifecycle
 
-### Allocating money by hand
+| State | Meaning |
+|---|---|
+| `PENDING_APPROVAL` | a second person has not agreed yet |
+| `APPROVED` | agreed, not yet sent |
+| `SUBMITTED_TO_PSP` | sent, outcome unknown |
+| `CLEARED` / `FAILED` | the provider told us what happened |
 
-`/ops/payments` holds money that is genuinely in the merchant account but could
-not be attributed automatically — usually a buyer quoting an old order code on a
-bank transfer. Allocation is held to exactly the same threshold as the automated
-webhook path: an allocation short of the deposit records the money and leaves the
-order where it is. The manual route is not a way around the rule.
+`POST /payouts/:id/submit` accepts **only the payout id**. Amount, supplier,
+beneficiary, bank account, preparer and approver all come from Postgres. The
+account number is decrypted at that moment, bound to that beneficiary row,
+attributed to the settlement, and never returned beyond its last four digits.
 
-A payment that has already cleared cannot be allocated again. If it went to the
-wrong order, raise a reversal — allocating twice makes one transfer pay two
-orders, and the books balance while the yard is short a delivery.
+A row with `submitted_at` set and a non-final state is **money in flight**.
+Reconcile against the provider statement; do not resubmit. Without
+`SUBMITTED_TO_PSP` a timeout is indistinguishable from "never sent", and the
+natural response to that ambiguity pays the supplier twice.
 
-### Approving a payout
+## Bank details
 
-Needs a different person from whoever prepared it. This is checked in the
-console, in the service, and by a CHECK constraint in the database, because a
-control that lives in one place is one refactor away from not existing.
-Seniority is not an exemption: an executive cannot approve their own payout
-either.
+Every read and write goes through `apps/api/src/repo/beneficiary.ts`. Nothing
+else touches the table — not the seed, not the console, not the payout path.
 
-## Before going live
+Ordinary reads return the last four digits. `revealForPayout` is the only
+decrypt path; it requires a finance role and a settlement id, and writes an audit
+entry each time.
 
-Three things are known-incomplete and are deliberate, not oversights:
+Ciphertext is bound to its row and field with AES-GCM additional authenticated
+data. Without that binding, a complete encrypted value can be copied from one
+beneficiary into another, decrypt cleanly, and send the money to the wrong
+account with every check passing. That was demonstrated as a working attack and
+there are regression tests for it at both the utility and database levels.
 
-1. **The idempotency store is in-memory.** Correct for one server, wrong for
-   two. Behind a load balancer, two instances will not see each other's replays
-   and a retried payment could process twice. Move it to Redis or a Postgres
-   table before scaling horizontally.
+Changes supersede rather than overwrite. The 24-hour payout cooldown is computed
+from that history, and an overwrite erases the very fact that a change happened —
+which is what the fraud depends on.
 
-2. **Distance is a fixed 28 km.** Road distance belongs to the transport module,
-   which is deliberately out of scope per the original handoff.
+## The audit log
 
-3. **Beneficiary account numbers are stored as `enc:placeholder` by the seed.**
-   Real encryption at rest must be wired before any real bank detail is entered.
+Hash-chained and append-only, with `UPDATE` and `DELETE` revoked from the
+application role. `/internal/audit-integrity` re-walks the chain and requires an
+ops manager, finance or executive role.
 
-## Professional advice still needed
+Anything hashed must survive the Postgres round trip byte-identically. Three
+separate defects came from ignoring that: jsonb reordering object keys,
+timestamps gaining milliseconds, and `undefined` values hashed as `null` but
+dropped entirely by jsonb. Appends are serialised with a transaction-scoped
+advisory lock, because two instances writing concurrently otherwise read the same
+chain tip and fork it.
+
+An integrity check that reports tampering on an intact chain is worse than no
+check at all, because it teaches people to ignore the alarm.
+
+## Deployment
+
+```bash
+npm run build          # typecheck, then bundle to dist/server.js
+docker build -f apps/api/Dockerfile -t reharvest-api .
+```
+
+Three stages: install, build, run. The runtime image contains compiled
+JavaScript and production dependencies — no TypeScript, no compiler, no test
+tooling. It does not rely on Node's strip-only TypeScript execution, which is a
+development convenience with failure modes of its own.
+
+The ops console is served by the same process at `/ops`. There is no second
+deployment.
+
+## Known gaps
+
+**Unverified: the Docker image and GitHub Actions.** Neither has ever been
+executed. The environment this was built in has no Docker binary and no push
+credentials. The Dockerfile and workflow are written, and their inputs are
+checked, but until a CI run is green they are unproven. Do not treat them as
+working, and do not report Docker as verified without a green Docker job.
+
+**Distance is a fixed 28 km.** Road distance belongs to the transport module,
+which is out of scope. It affects only market list sorting.
+
+**Counterparty accounts are per-party, not per-person.** A supplier business has
+one identity rather than one per employee. Staff console accounts are already
+per-person.
+
+## Professional advice still required
 
 The software enforces rules; it cannot tell you which rules a regulator will
-apply. Before real money moves, get qualified Egyptian advice on: NFSA food
-safety duties, ETA e-invoicing and tax treatment, the legal form of the supplier
-and buyer contracts, and whether the trading structure needs a CBE payment
-licence or can operate as merchant of record.
+apply to you. Before real money moves, get qualified Egyptian advice on:
+
+- NFSA food safety duties, and what inspection records must contain
+- ETA e-invoicing and the tax treatment of a managed trading margin
+- The legal form of the supplier and buyer contracts
+- Whether the trading structure requires a CBE payment licence, or can operate
+  as merchant of record under an existing provider's licence
+
+These are not software questions, and no amount of testing substitutes for them.
