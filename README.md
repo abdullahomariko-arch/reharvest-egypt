@@ -92,7 +92,11 @@ npm run db:proof          # 10 SQL invariant proofs
 npm run test:integration  # 8 suites; needs Postgres and two API instances
 ```
 
-## Not verified
+## Verification status
 
-The Docker image and the GitHub Actions workflow have never been run. They are
-written and their inputs are checked, but unproven until a CI run is green.
+V12 was verified on 21 August 2026. All five GitHub Actions jobs passed: static
+checks, database migrations and invariant proofs, the Docker image build/start
+probe, two-instance HTTP integration, and the mobile web bundle. The green run
+is recorded at:
+
+https://github.com/abdullahomariko-arch/reharvest-egypt/actions/runs/32463473376

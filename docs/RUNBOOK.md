@@ -232,11 +232,13 @@ deployment.
 
 ## Known gaps
 
-**Unverified: the Docker image and GitHub Actions.** Neither has ever been
-executed. The environment this was built in has no Docker binary and no push
-credentials. The Dockerfile and workflow are written, and their inputs are
-checked, but until a CI run is green they are unproven. Do not treat them as
-working, and do not report Docker as verified without a green Docker job.
+**Docker and GitHub Actions are verified.** All five jobs passed on 21 August
+2026 at commit `062cd7cf91e19a41f882bca63fb9b0b484324ead`. The Docker job built the
+image, proved no TypeScript reached the runtime layer, started the container,
+probed health and readiness, verified access controls, and authenticated a staff
+session into the ops console. The complete green run is recorded at:
+
+https://github.com/abdullahomariko-arch/reharvest-egypt/actions/runs/32463473376
 
 **Distance is a fixed 28 km.** Road distance belongs to the transport module,
 which is out of scope. It affects only market list sorting.
