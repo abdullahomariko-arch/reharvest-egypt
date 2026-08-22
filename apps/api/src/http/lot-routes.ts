@@ -14,9 +14,26 @@
  * rule that will refuse identically every time.
  */
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { ServiceError, type LotService, type OrderService, type LotRow } from '../service/lot-order-service.ts';
 import { CRATE_SPECS } from '@reharvest/core/quantity';
+import {
+  Forbidden,
+  assertMayListLot,
+  assertMayWeighLot,
+  assertMayInspect,
+  assertMayPlaceOrder,
+  assertMayAccessOrder,
+} from '../authz.ts';
+import { idempotencyMiddleware } from './idempotency-middleware.ts';
+import type { IdempotencyStore } from '../repo/idempotency.ts';
+
+/** Context variables set by the middleware chain, typed so handlers are not stringly-typed. */
+type Vars = {
+  principal: Principal;
+  idempotencyScopedKey: string;
+  idempotencyApplied: boolean;
+};
 
 export interface Principal {
   readonly userId: string;
@@ -27,6 +44,7 @@ export interface Principal {
 export interface LotRouteDeps {
   readonly lots: LotService;
   readonly orders: OrderService;
+  readonly idempotency: IdempotencyStore;
   readonly authenticate: (req: Request) => Promise<Principal | null>;
   /** Distance from the buyer's kitchen. Injected so the service stays geography-free. */
   readonly distanceKm: (lot: LotRow, principal: Principal) => number;
@@ -34,7 +52,7 @@ export interface LotRouteDeps {
 }
 
 export function buildLotRoutes(deps: LotRouteDeps) {
-  const app = new Hono();
+  const app = new Hono<{ Variables: Vars }>();
 
   const wire = (lot: LotRow, p: Principal) => ({
     lotId: lot.id,
@@ -69,7 +87,7 @@ export function buildLotRoutes(deps: LotRouteDeps) {
 
     Middleware that guards a router should name the paths that router owns.
   */
-  const guard = async (c: any, next: () => Promise<void>) => {
+  const guard = async (c: Context<{ Variables: Vars }>, next: () => Promise<void>) => {
     const p = await deps.authenticate(c.req.raw);
     if (!p) return c.json({ error: 'unauthenticated' }, 401);
     c.set('principal', p);
@@ -78,9 +96,22 @@ export function buildLotRoutes(deps: LotRouteDeps) {
 
   for (const path of ['/lots', '/lots/*', '/orders', '/orders/*']) {
     app.use(path, guard);
+    /*
+      Strictly after `guard`. Hono runs middleware in registration order, so
+      authentication resolves the actor before the idempotency layer scopes the
+      key to them. Registering these the other way round is what let one user
+      receive another user's stored response.
+    */
+    app.use(
+      path,
+      idempotencyMiddleware({
+        idempotency: deps.idempotency,
+        actorOf: (c) => c.get('principal') ?? null,
+      }),
+    );
   }
 
-  const who = (c: any): Principal => c.get('principal');
+  const who = (c: Context<{ Variables: Vars }>): Principal => c.get('principal');
 
   /* ---------------- lots ---------------- */
 
@@ -95,8 +126,8 @@ export function buildLotRoutes(deps: LotRouteDeps) {
 
   app.post('/lots', async (c) => {
     const p = who(c);
-    const key = c.req.header('Idempotency-Key');
-    if (!key) return c.json({ error: 'Idempotency-Key header is required' }, 400);
+    // Scoped by the middleware to actor + method + route, never the raw header.
+    const key = c.get('idempotencyScopedKey');
 
     const b = await c.req.json<{
       crop: string;
@@ -116,6 +147,7 @@ export function buildLotRoutes(deps: LotRouteDeps) {
     }
 
     return handle(c, async () => {
+      assertMayListLot(p);
       const lot = await deps.lots.create({
         supplierId: p.partyId,
         crop: b.crop,
@@ -132,8 +164,8 @@ export function buildLotRoutes(deps: LotRouteDeps) {
 
   app.post('/lots/:id/weighings', async (c) => {
     const p = who(c);
-    const key = c.req.header('Idempotency-Key');
-    if (!key) return c.json({ error: 'Idempotency-Key header is required' }, 400);
+    // Scoped by the middleware to actor + method + route, never the raw header.
+    const key = c.get('idempotencyScopedKey');
 
     const b = await c.req.json<{
       grossGrams: string;
@@ -144,6 +176,16 @@ export function buildLotRoutes(deps: LotRouteDeps) {
     }>();
 
     return handle(c, async () => {
+      /*
+        Ownership is checked against the stored lot, not against anything the
+        caller sent. Reproduced before this existed: supplier B posted a
+        weighing to supplier A's lot and set a 986.5kg settlement weight on
+        produce that was not theirs.
+      */
+      const target = await deps.lots.byId(c.req.param('id'));
+      if (!target) return { error: 'not_found' };
+      assertMayWeighLot(p, target);
+
       const lot = await deps.lots.recordWeighing({
         lotId: c.req.param('id'),
         grossGrams: BigInt(b.grossGrams),
@@ -168,12 +210,16 @@ export function buildLotRoutes(deps: LotRouteDeps) {
 
   app.post('/lots/:id/inspections', async (c) => {
     const p = who(c);
-    const key = c.req.header('Idempotency-Key');
-    if (!key) return c.json({ error: 'Idempotency-Key header is required' }, 400);
+    // Scoped by the middleware to actor + method + route, never the raw header.
+    const key = c.get('idempotencyScopedKey');
 
     const b = await c.req.json<{ checks: Record<string, boolean>; freeze: boolean }>();
 
     return handle(c, async () => {
+      // Inside handle, so a refusal is a 403 the client can act on rather than
+      // an unhandled throw surfacing as a 500.
+      assertMayInspect(p);
+
       const lot = await deps.lots.recordInspection({
         lotId: c.req.param('id'),
         checks: b.checks,
@@ -190,12 +236,13 @@ export function buildLotRoutes(deps: LotRouteDeps) {
 
   app.post('/orders', async (c) => {
     const p = who(c);
-    const key = c.req.header('Idempotency-Key');
-    if (!key) return c.json({ error: 'Idempotency-Key header is required' }, 400);
+    // Scoped by the middleware to actor + method + route, never the raw header.
+    const key = c.get('idempotencyScopedKey');
 
     const b = await c.req.json<{ lotId: string; quantityGrams: string }>();
 
     return handle(c, async () => {
+      assertMayPlaceOrder(p);
       const order = await deps.orders.create({
         buyerId: p.partyId,
         lotId: b.lotId,
@@ -218,6 +265,7 @@ export function buildLotRoutes(deps: LotRouteDeps) {
   app.get('/orders/:code', async (c) =>
     handle(c, async () => {
       const o = await deps.orders.byCode(c.req.param('code'));
+      assertMayAccessOrder(who(c), o);
       return {
         orderCode: o.orderCode,
         lotId: o.lotId,
@@ -242,6 +290,19 @@ async function handle(c: any, fn: () => Promise<unknown>) {
   try {
     return c.json(await fn(), 200);
   } catch (e) {
+    if (e instanceof Forbidden) {
+      // 403 rather than 422: this is not a rule the caller can satisfy by
+      // correcting their input, so the response says so plainly.
+      return c.json(
+        {
+          error: 'forbidden',
+          reasonCode: e.reasonCode,
+          message: e.message,
+          correctionPath: e.correctionPath,
+        },
+        403,
+      );
+    }
     if (e instanceof ServiceError) {
       return c.json(
         {

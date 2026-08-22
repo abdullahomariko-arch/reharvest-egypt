@@ -1,0 +1,28 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": ".",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2023",
+    "declaration": false,
+    "sourceMap": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": [
+    "apps/api/src/**/*.ts",
+    "apps/admin/src/**/*.ts",
+    "packages/core/src/**/*.ts",
+    "packages/payments/src/**/*.ts",
+    "packages/db/src/**/*.ts"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "apps/mobile/**",
+    "**/*.tsx"
+  ]
+}

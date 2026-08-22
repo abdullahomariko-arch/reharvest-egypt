@@ -364,3 +364,109 @@ describe('supplier payout', () => {
     assert.equal(r.providerTransactionId, 'tx_9');
   });
 });
+
+/* ---------------------------------------------------------------- *
+ * Atomicity
+ *
+ * Regression tests for a defect that existed in v10: recording the payment,
+ * advancing the order and writing the audit entry were three separate
+ * transactions. A failure between the first and the second left the payment
+ * written and the order untouched — and because the replay gate treated any
+ * recorded payment as a duplicate, every retry was dismissed. The buyer had
+ * paid, the order sat in DEPOSIT_PENDING, and nothing surfaced the problem.
+ * ---------------------------------------------------------------- */
+
+describe('webhook atomicity', () => {
+  /** A transact that rolls back the whole unit if the body throws. */
+  function rollingBackTransact(f: ReturnType<typeof fakes>) {
+    return async <T>(fn: (repos: any) => Promise<T>): Promise<T> => {
+      const storedBefore = f.stored.length;
+      const advancedBefore = f.advanced.length;
+      try {
+        return await fn({ orders: f.orders, payments: f.payments });
+      } catch (e) {
+        // Undo, the way a database transaction would.
+        f.stored.length = storedBefore;
+        f.advanced.length = advancedBefore;
+        throw e;
+      }
+    };
+  }
+
+  test('an advance failure rolls the payment back, so the retry is not a duplicate', async () => {
+    const f = fakes();
+    let failAdvance = true;
+
+    const brittleOrders = {
+      ...f.orders,
+      async advance(code: string, to: any, audit: any) {
+        if (failAdvance) throw new Error('deadlock detected while advancing order');
+        return f.orders.advance(code, to, audit);
+      },
+    };
+
+    const svc = new PaymentService({
+      paymob: new PaymobClient(config, async () => new Response('{}', { status: 200 })),
+      config,
+      orders: brittleOrders,
+      payments: f.payments,
+      controls: f.controls,
+      clock,
+      transact: rollingBackTransact({ ...f, orders: brittleOrders } as any),
+    });
+
+    const { payload, hmac } = await signedWebhook();
+
+    // First delivery: the advance blows up after the payment is written.
+    await assert.rejects(() => svc.handleWebhook(payload, hmac), /deadlock/);
+
+    // The payment must NOT be left behind, or the retry looks like a duplicate.
+    assert.equal(f.stored.length, 0, 'a failed unit must leave no payment row');
+    assert.equal(f.advanced.length, 0);
+
+    // Paymob retries. This time the advance succeeds.
+    failAdvance = false;
+    const retry = await svc.handleWebhook(payload, hmac);
+
+    assert.equal(retry.outcome, 'order_advanced', 'the retry must repair, not be dismissed');
+    assert.equal(f.advanced.length, 1);
+    assert.equal(f.stored.length, 1);
+  });
+
+  test('a genuine duplicate is still ignored once the order has moved', async () => {
+    const f = fakes();
+    const svc = service(f);
+    const { payload, hmac } = await signedWebhook();
+
+    const first = await svc.handleWebhook(payload, hmac);
+    const second = await svc.handleWebhook(payload, hmac);
+
+    assert.equal(first.outcome, 'order_advanced');
+    assert.equal(second.outcome, 'ignored_duplicate');
+    assert.equal(f.advanced.length, 1, 'the order must move exactly once');
+  });
+
+  test('a recorded payment against an order that never moved is treated as a repair', async () => {
+    // Simulates the state v10 could leave behind: payment written, order stuck.
+    const f = fakes();
+    const svc = service(f);
+    const { payload, hmac } = await signedWebhook();
+
+    // Pre-seed the payment without advancing the order.
+    await f.payments.recordInbound({
+      providerTransactionId: '998877',
+      orderCode: baseOrder.orderCode,
+      amount: egp.fromPounds(2_640),
+      method: 'wallet',
+      payerNameObserved: baseOrder.buyerLegalName,
+      bankReference: '998877',
+      clearedAt: null,
+      purpose: 'deposit',
+    });
+
+    const result = await svc.handleWebhook(payload, hmac);
+
+    assert.equal(result.outcome, 'order_advanced', 'a stuck order must be repairable by a retry');
+    assert.equal(f.advanced.length, 1);
+  });
+});

@@ -32,6 +32,10 @@ services:
       PAYMOB_SECRET_KEY: ${PAYMOB_SECRET_KEY:-sk_test_placeholder}
       PAYMOB_PUBLIC_KEY: ${PAYMOB_PUBLIC_KEY:-pk_test_placeholder}
       PAYMOB_HMAC_SECRET: ${PAYMOB_HMAC_SECRET:-hmac_test_placeholder}
+      # A fixed development key so a local database survives a restart. Any
+      # real deployment must supply its own; losing this key means losing every
+      # bank account number.
+      FIELD_ENCRYPTION_KEYS: ${FIELD_ENCRYPTION_KEYS:-v1:OLS92ukUQEYtSTgQHc8WLnzjjTc59D+OiM9lbbvijvE=}
     ports: ['8787:8787']
 
 volumes:

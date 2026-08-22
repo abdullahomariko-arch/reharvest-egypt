@@ -24,8 +24,24 @@ import { makeAuthenticator } from './auth.ts';
 import { LotService, OrderService } from './service/lot-order-service.ts';
 import { PaymentService } from './service/payment-service.ts';
 import { createLotRepo, createOrderRepo } from './repo/postgres.ts';
-import { createPaymentOrderRepo, createPaymentRepo, verifyAuditChain } from './repo/payment-postgres.ts';
+import {
+  createPaymentOrderRepo,
+  createPaymentRepo,
+  createWebhookTransactor,
+  verifyAuditChain,
+} from './repo/payment-postgres.ts';
 import { buildOpsConsole } from '../../admin/src/routes.ts';
+import { createIdempotencyStore } from './repo/idempotency.ts';
+import { createSessionStore } from './session.ts';
+import { assertMayReadInternal } from './authz.ts';
+import { buildAuthRoutes } from './http/auth-routes.ts';
+import { buildPayoutRoutes } from './http/payout-routes.ts';
+import { buildBeneficiaryRoutes } from './http/beneficiary-routes.ts';
+import { createBeneficiaryRepository } from './repo/beneficiary.ts';
+import { createFakeDisbursement, assertDisbursementDriverIsSafe } from './fake-disbursement.ts';
+import { createOtpService, createOtpProvider, type OtpConfig } from './otp.ts';
+import { verifyStaffLogin } from './staff-login.ts';
+import { Keyring } from '@reharvest/core/crypto';
 import { PaymobClient } from '@reharvest/payments/paymob';
 import { buildP0Registry } from '@reharvest/core/guard';
 
@@ -37,6 +53,8 @@ interface Config {
   readonly port: number;
   readonly databaseUrl: string;
   readonly authSecret: string;
+  readonly encryptionKeys: string;
+  readonly otp: OtpConfig;
   readonly paymob: {
     baseUrl: string;
     secretKey: string;
@@ -58,6 +76,14 @@ function loadConfig(env: NodeJS.ProcessEnv): Config {
     port: Number(env.PORT ?? 8787),
     databaseUrl: need('DATABASE_URL'),
     authSecret: need('AUTH_SIGNING_SECRET'),
+    encryptionKeys: need('FIELD_ENCRYPTION_KEYS'),
+    otp: {
+      // Defaults to the stub only outside production; production has no default.
+      driver: (env.OTP_DRIVER as 'console' | 'http-sms') ?? (env.NODE_ENV === 'production' ? 'http-sms' : 'console'),
+      endpoint: env.OTP_SMS_ENDPOINT,
+      apiKey: env.OTP_SMS_API_KEY,
+      senderId: env.OTP_SMS_SENDER_ID,
+    },
     paymob: {
       baseUrl: env.PAYMOB_BASE_URL ?? 'https://accept.paymob.com',
       secretKey: need('PAYMOB_SECRET_KEY'),
@@ -85,6 +111,14 @@ function loadConfig(env: NodeJS.ProcessEnv): Config {
     throw new Error('AUTH_SIGNING_SECRET must be at least 32 characters. Short secrets are brute-forceable.');
   }
 
+  // Validated at boot rather than at the first payout. A malformed keyring
+  // discovered while money is moving is the worst possible time to find out.
+  Keyring.fromEnv(config.encryptionKeys);
+
+  // Same reasoning: a bad OTP configuration should stop the deploy, not the
+  // first person trying to sign in.
+  createOtpProvider(config.otp, env.NODE_ENV);
+
   return config;
 }
 
@@ -108,8 +142,53 @@ export function buildServer(config: Config) {
   const orderRepo = createOrderRepo(db);
   const clock = { now: () => new Date().toISOString() };
   const authenticate = makeAuthenticator(config.authSecret);
+  const idempotency = createIdempotencyStore(db);
 
   const app = new Hono();
+
+  // Selected by configuration. Production refuses the development stub, and
+  // refuses a half-configured gateway, at boot rather than at first sign-in.
+  const otpProvider = createOtpProvider(config.otp, process.env.NODE_ENV);
+
+  const keyring = Keyring.fromEnv(config.encryptionKeys);
+  const beneficiaries = createBeneficiaryRepository(db, keyring);
+
+  const disbursementDriver = process.env.DISBURSEMENT_DRIVER ?? (process.env.NODE_ENV === 'production' ? 'paymob' : 'fake');
+  assertDisbursementDriverIsSafe(disbursementDriver, process.env.NODE_ENV);
+  const fakeDisburse = createFakeDisbursement(db);
+
+  app.route('/', buildBeneficiaryRoutes({ beneficiaries, authenticate }));
+
+  app.route(
+    '/',
+    buildPayoutRoutes({
+      db,
+      beneficiaries,
+      authenticate,
+      disburse: async ({ idempotencyKey, amountPiastres, accountNumber, holderName, bankCode }) => {
+        if (disbursementDriver === 'fake') {
+          return fakeDisburse({ idempotencyKey, amountPiastres, accountNumber, holderName, bankCode });
+        }
+        const receipt = await new PaymobClient(config.paymob as never, fetch).disburse({
+          settlementId: idempotencyKey,
+          amount: { amount: amountPiastres, currency: 'EGP' } as never,
+          channel: 'bank',
+          beneficiaryName: holderName,
+          bankAccountNumber: accountNumber,
+          bankCode: bankCode ?? undefined,
+          preparedBy: 'system',
+          approvedBy: 'system',
+          idempotencyKey,
+        });
+        return {
+          providerTransactionId: receipt.providerTransactionId,
+          status: receipt.status === 'failed' ? ('failed' as const) : ('accepted' as const),
+        };
+      },
+    }),
+  );
+
+  app.route('/', buildAuthRoutes({ db, otp: createOtpService(db, otpProvider), authSecret: config.authSecret }));
 
   /*
     Health checks are two endpoints, not one, and the difference matters to a
@@ -131,6 +210,19 @@ export function buildServer(config: Config) {
     access editing history; both need a person immediately.
   */
   app.get('/internal/audit-integrity', async (c) => {
+    /*
+      Restricted. Left open it told anyone on the network how many audit entries
+      exist and, more usefully to an attacker, whether tampering had been
+      noticed yet. Reproduced as a 200 with no credentials at all.
+    */
+    const actor = await authenticate(c.req.raw);
+    if (!actor) return c.json({ error: 'unauthenticated' }, 401);
+    try {
+      assertMayReadInternal(actor);
+    } catch (e) {
+      return c.json({ error: 'forbidden', message: (e as Error).message }, 403);
+    }
+
     const result = await verifyAuditChain(db);
     return c.json(
       {
@@ -161,6 +253,7 @@ export function buildServer(config: Config) {
       authenticate,
       // Straight-line distance is enough to sort a market list. Road distance
       // belongs to the transport module, which is deliberately out of scope.
+      idempotency,
       distanceKm: () => 28,
       originName: (lot) => lot.supplierId,
     }),
@@ -178,6 +271,8 @@ export function buildServer(config: Config) {
       db,
       lots: new LotService(lotRepo, clock),
       authenticate,
+      sessions: createSessionStore(db, config.authSecret),
+      verifyStaffLogin: verifyStaffLogin(db),
       concentrationCeilingPct: 35,
     }),
   );
@@ -190,46 +285,24 @@ export function buildServer(config: Config) {
         config: config.paymob as never,
         orders: createPaymentOrderRepo(db),
         payments: createPaymentRepo(db),
+        // Record, advance and audit commit together or not at all.
+        transact: createWebhookTransactor(db),
         controls: buildP0Registry({ record: () => {} }),
         clock,
       }),
-      idempotency: makeIdempotencyStore(),
+      idempotency,
       authenticate: async (req) => {
         const p = await authenticate(req);
-        return p ? { userId: p.userId, roles: [...p.roles] } : null;
+        return p ? { userId: p.userId, partyId: p.partyId, roles: [...p.roles] } : null;
+      },
+      ownerOfOrder: async (orderCode) => {
+        const o = await orderRepo.byCode(orderCode);
+        return o?.buyerId ?? null;
       },
     }),
   );
 
   return { app, client };
-}
-
-/**
- * Idempotency store.
- *
- * In-memory here, which is correct for a single instance and wrong for more
- * than one — two instances behind a load balancer will not see each other's
- * replays. Moving this to Redis or a Postgres table is the first thing to do
- * before scaling horizontally, and it is called out in the deployment notes.
- */
-function makeIdempotencyStore() {
-  const map = new Map<string, { status: number; body: unknown; at: number }>();
-  const TTL_MS = 24 * 3600 * 1000;
-
-  return {
-    async get(key: string) {
-      const hit = map.get(key);
-      if (!hit) return null;
-      if (Date.now() - hit.at > TTL_MS) {
-        map.delete(key);
-        return null;
-      }
-      return { status: hit.status, body: hit.body };
-    },
-    async put(key: string, value: { status: number; body: unknown }) {
-      map.set(key, { ...value, at: Date.now() });
-    },
-  };
 }
 
 /* ------------------------------------------------------------------ *

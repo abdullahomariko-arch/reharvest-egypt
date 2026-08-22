@@ -47,6 +47,9 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/reharvest
       AUTH_SIGNING_SECRET: ci-signing-secret-at-least-thirty-two-chars
+      OTP_DRIVER: console
+      DISBURSEMENT_DRIVER: fake
+      FIELD_ENCRYPTION_KEYS: 'v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaao='
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -75,11 +78,175 @@ jobs:
           done
           curl -sf http://localhost:8787/health
           curl -sf http://localhost:8787/ready
-          # The audit chain must verify on a fresh database.
-          curl -sf http://localhost:8787/internal/audit-integrity
           # Unauthenticated access to trading data must be refused, not served.
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8787/lots)" = "401"
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8787/ops)" = "401"
+
+          # Anonymous audit integrity must be 401 …
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8787/internal/audit-integrity)" = "401"
+
+      # … and an authorised ops token must reach it. Asserting only the refusal
+      # would pass just as happily against an endpoint that is broken for
+      # everyone.
+      - name: An ops token reaches audit integrity
+        run: npx tsx .github/scripts/ci-audit-integrity.ts
+
+  docker:
+    name: Image builds, starts and serves
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: reharvest
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+
+      - name: Prepare the database
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/reharvest
+          AUTH_SIGNING_SECRET: ci-signing-secret-at-least-thirty-two-chars
+          FIELD_ENCRYPTION_KEYS: 'v1:MIgx8iBjNTNJAPLreVcbxbds4GTRmVfUfAWKHKZKL5I='
+        run: |
+          npm run db:migrate
+          npm run db:seed
+
+      # Catches the two failures this Dockerfile actually had: a missing
+      # apps/admin manifest in the dependency stage, and apps/admin never being
+      # copied into the runtime image — which builds cleanly and then 500s on
+      # every /ops request.
+      - name: Build the image
+        run: docker build -f apps/api/Dockerfile -t reharvest-api:ci .
+
+      - name: The image contains no TypeScript
+        run: |
+          # Strip-only execution is a development convenience. If a .ts file
+          # reaches the runtime image, the build stage silently did not happen.
+          if docker run --rm reharvest-api:ci sh -c "find dist -name '*.ts' | head -1" | grep -q '\.ts'; then
+            echo "FATAL: TypeScript found in the runtime image."
+            exit 1
+          fi
+
+      - name: Start it
+        run: |
+          docker run -d --name reharvest --network host \
+            -e DATABASE_URL=postgres://postgres:postgres@localhost:5432/reharvest \
+            -e AUTH_SIGNING_SECRET=ci-signing-secret-at-least-thirty-two-chars \
+            -e FIELD_ENCRYPTION_KEYS='v1:MIgx8iBjNTNJAPLreVcbxbds4GTRmVfUfAWKHKZKL5I=' \
+            -e PAYMOB_SECRET_KEY=sk_ci -e PAYMOB_PUBLIC_KEY=pk_ci -e PAYMOB_HMAC_SECRET=hmac_ci \
+            -e OTP_DRIVER=http-sms -e OTP_SMS_ENDPOINT=https://sms.invalid/send \
+            -e OTP_SMS_API_KEY=ci -e OTP_SMS_SENDER_ID=ReHarvest \
+            -e DISBURSEMENT_DRIVER=paymob \
+            -e PORT=8787 reharvest-api:ci
+          up=0
+          for i in $(seq 1 30); do
+            sleep 2
+            if curl -sf http://localhost:8787/health >/dev/null; then up=1; break; fi
+          done
+          if [ "$up" != "1" ]; then
+            echo "FATAL: the container never became healthy."
+            docker logs reharvest
+            exit 1
+          fi
+
+      - name: It serves
+        run: |
+          curl -sf http://localhost:8787/health
+          curl -sf http://localhost:8787/ready
+
+          # Unauthenticated trading data must be refused, not served.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8787/lots)" = "401"
+
+          # A browser with no session gets the login form, not the console.
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Accept: text/html' http://localhost:8787/ops)" = "302"
+
+          # The audit endpoint must refuse anonymous callers.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8787/internal/audit-integrity)" = "401"
+
+          # And the login form itself must render.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8787/ops/login)" = "200"
+
+      - name: An authenticated staff session reaches the console
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/reharvest
+        run: npx tsx .github/scripts/ci-ops-login.ts
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs reharvest
+
+  integration:
+    name: HTTP and concurrency suites
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: reharvest
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/reharvest
+      AUTH_SIGNING_SECRET: ci-signing-secret-at-least-thirty-two-chars
+      PAYMOB_SECRET_KEY: sk_ci
+      PAYMOB_PUBLIC_KEY: pk_ci
+      PAYMOB_HMAC_SECRET: hmac_test_secret
+      # Was missing entirely, so the integration job could never boot the API.
+      FIELD_ENCRYPTION_KEYS: 'v1:aQ3nR7xK2mB8vC1zL5tY9wE4uI6oP0sD2fG7hJ4kM8Q='
+      OTP_DRIVER: console
+      DISBURSEMENT_DRIVER: fake
+      OTP_LOG: /tmp/api-9001.log
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+
+      - name: Prepare
+        run: |
+          npm run db:migrate
+          npm run db:seed
+
+      # Two instances on one database. The concurrency scenarios are meaningless
+      # against a single process — a per-process Map looks correct until there
+      # are two of them.
+      - name: Start two instances
+        run: |
+          PORT=9001 npx tsx apps/api/src/index.ts > /tmp/api-9001.log 2>&1 &
+          PORT=9002 npx tsx apps/api/src/index.ts > /tmp/api-9002.log 2>&1 &
+          up=0
+          for i in $(seq 1 30); do
+            sleep 2
+            if curl -sf http://localhost:9001/health >/dev/null && \
+               curl -sf http://localhost:9002/health >/dev/null; then up=1; break; fi
+          done
+          # Explicit failure. A loop that simply ends leaves the suites to fail
+          # with confusing connection errors instead of naming the real problem.
+          if [ "$up" != "1" ]; then
+            echo "FATAL: the API never became healthy."
+            tail -60 /tmp/api-9001.log /tmp/api-9002.log
+            exit 1
+          fi
+
+      # Discovers and runs every suite, including the payout one.
+      - name: Integration suites
+        run: npm run test:integration
+
+      - name: Server logs on failure
+        if: failure()
+        run: tail -50 /tmp/api-9001.log /tmp/api-9002.log
 
   bundle:
     name: Mobile app bundles

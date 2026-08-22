@@ -11,7 +11,7 @@
  * state machine says are impossible.
  */
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 
@@ -20,6 +20,13 @@ import { ServiceError, type LotService } from '../../api/src/service/lot-order-s
 import { verifyAuditChain } from '../../api/src/repo/payment-postgres.ts';
 import { allocatePayment, approvePayout } from '../../api/src/repo/allocation.ts';
 import type { Principal } from '../../api/src/auth.ts';
+import {
+  createSessionStore,
+  checkCsrf,
+  CSRF_FIELD,
+  type SessionStore,
+  type StaffSession,
+} from '../../api/src/session.ts';
 import { layout, instrument, table, empty, pill, blockCard, esc, egpStr, kgStr, ago } from './layout.ts';
 
 type Db = PostgresJsDatabase<Record<string, never>>;
@@ -27,36 +34,145 @@ type Db = PostgresJsDatabase<Record<string, never>>;
 export interface OpsDeps {
   readonly db: Db;
   readonly lots: LotService;
+  /** Bearer authentication, still accepted for scripted access and tests. */
   readonly authenticate: (req: Request) => Promise<Principal | null>;
+  readonly sessions: SessionStore;
+  /** Verifies a staff sign-in. Returns the user, or null. */
+  readonly verifyStaffLogin: (
+    identifier: string,
+    secret: string,
+  ) => Promise<{ userId: string; displayName: string; partyId: string; roles: readonly string[] } | null>;
   readonly concentrationCeilingPct: number;
 }
 
 const SELLABLE = ['AVAILABLE', 'PARTIALLY_RESERVED'] as const;
 
+/** Context variables the console's middleware chain sets. */
+type Vars = {
+  principal: Principal;
+  session: StaffSession;
+  parsedForm: Record<string, unknown>;
+};
+
 export function buildOpsConsole(deps: OpsDeps) {
-  const app = new Hono();
+  const app = new Hono<{ Variables: Vars }>();
   const { db } = deps;
 
   /* ---------------- auth ---------------- */
 
-  app.use('/ops', guard);
-  app.use('/ops/*', guard);
+  /*
+    The guard must not cover the sign-in endpoints, or the login POST is itself
+    redirected to the login form and nobody can ever authenticate. Registered
+    with an explicit exemption rather than by relying on route ordering, which
+    is easy to break with an innocent-looking reshuffle.
+  */
+  const PUBLIC_PATHS = new Set(['/ops/login', '/ops/logout']);
+
+  const guardUnlessPublic = async (c: Context<{ Variables: Vars }>, next: () => Promise<void>) => {
+    if (PUBLIC_PATHS.has(new URL(c.req.url).pathname)) return next();
+    return guard(c, next);
+  };
+
+  app.use('/ops', guardUnlessPublic);
+  app.use('/ops/*', guardUnlessPublic);
+
+  /* ---------------- sign in / out ---------------- */
+
+  app.get('/ops/login', async (c) => c.html(loginPage(c.req.query('error'))));
+
+  app.post('/ops/login', async (c) => {
+    const form = await c.req.parseBody();
+    const user = await deps.verifyStaffLogin(String(form.identifier ?? ''), String(form.secret ?? ''));
+
+    if (!user) {
+      // One message for a wrong identifier and a wrong secret. Distinguishing
+      // them tells an attacker which staff accounts exist.
+      return c.redirect('/ops/login?error=1');
+    }
+
+    const { cookie } = await deps.sessions.create(user);
+    c.header('Set-Cookie', cookie);
+    return c.redirect('/ops');
+  });
+
+  app.post('/ops/logout', async (c) => {
+    const session = await deps.sessions.read(c.req.header('cookie') ?? null);
+
+    /*
+      Logout is outside the guard, so it does its own CSRF check.
+
+      Forced logout is a minor nuisance rather than a theft, but it is still an
+      action taken on someone's behalf without their intent — and an endpoint
+      that skips the check because the damage seems small is the one that gets
+      copied next time.
+    */
+    if (session) {
+      const form = await c.req.parseBody();
+      if (!checkCsrf(session, form[CSRF_FIELD])) return c.html(csrfFailedPage(), 403);
+    }
+    // Revoked server-side, not merely cleared client-side: a cookie copied
+    // before logout must stop working too.
+    if (session) await deps.sessions.revoke(session.id);
+    c.header('Set-Cookie', deps.sessions.clearedCookie());
+    return c.redirect('/ops/login');
+  });
 
   async function guard(c: any, next: () => Promise<void>) {
-    const p = await deps.authenticate(c.req.raw);
-    if (!p) {
-      return c.html(signInPage(), 401);
+    // A browser session first; bearer tokens remain for scripts and tests.
+    const session = await deps.sessions.read(c.req.header('cookie') ?? null);
+
+    if (session) {
+      c.set('session', session);
+      c.set('principal', {
+        userId: session.userId,
+        partyId: session.partyId,
+        roles: session.roles,
+        displayName: session.displayName,
+      } satisfies Principal);
+    } else {
+      const p = await deps.authenticate(c.req.raw);
+      if (!p) {
+        // A browser gets the login form; a script gets a 401 it can act on.
+        const wantsHtml = (c.req.header('accept') ?? '').includes('text/html');
+        return wantsHtml ? c.redirect('/ops/login') : c.json({ error: 'unauthenticated' }, 401);
+      }
+      c.set('principal', p);
     }
+
+    const p = c.get('principal') as Principal;
     // The console is for staff. A supplier with a valid token must not be able
     // to read the whole book by guessing the URL.
     if (!p.roles.some((r) => ['ops_agent', 'ops_manager', 'finance', 'executive'].includes(r))) {
       return c.html(forbiddenPage(p), 403);
     }
-    c.set('principal', p);
+
+    /*
+      CSRF on every state-changing request.
+
+      SameSite=Strict already blocks the classic cross-site POST, but SameSite is
+      enforced by the browser, and the browsers in a packhouse office are not
+      something this system controls. Two independent mechanisms, either
+      sufficient on its own.
+
+      Bearer-authenticated callers are exempt: a token is not attached
+      automatically by a browser, so there is nothing to forge.
+    */
+    if (c.req.method === 'POST') {
+      const session = c.get('session');
+      if (session) {
+        const form = await c.req.parseBody();
+        if (!checkCsrf(session, form[CSRF_FIELD])) {
+          return c.html(csrfFailedPage(), 403);
+        }
+        // Cache the parsed body so the handler does not re-read a consumed stream.
+        c.set('parsedForm', form);
+      }
+    }
+
     await next();
   }
 
-  const who = (c: any): Principal => c.get('principal');
+  const who = (c: Context<{ Variables: Vars }>): Principal => c.get('principal');
 
   /** Sidebar badge counts, computed once per render. */
   async function counts() {
@@ -208,6 +324,7 @@ export function buildOpsConsole(deps: OpsDeps) {
   });
 
   app.get('/ops/lots/:id', async (c) => {
+    const session = c.get('session');
     const cts = await counts();
     const [lot] = await db.select().from(lots).where(eq(lots.id, c.req.param('id'))).limit(1);
     if (!lot) return c.html(layout({ title: 'Lot not found', active: 'lots', counts: cts, body: empty('Not found', 'That lot does not exist.') }), 404);
@@ -250,6 +367,7 @@ export function buildOpsConsole(deps: OpsDeps) {
               <code>D31 · FOOD_SAFETY_HARD_STOP</code></div>`
           : `<div class="row">
               <form class="inline" method="post" action="/ops/lots/${esc(lot.id)}/quarantine">
+                ${csrfInput(session)}
                 <button class="btn danger" type="submit">Quarantine this lot</button>
               </form>
               <span class="lede" style="margin:0">Quarantine is irreversible from this console, by design.</span>
@@ -346,10 +464,13 @@ export function buildOpsConsole(deps: OpsDeps) {
   /* ---------------- unmatched money ---------------- */
 
   app.get('/ops/payments', async (c) => {
+    const session = c.get('session');
     const cts = await counts();
     const rows = await db
       .select()
       .from(payments)
+      // RECONCILED money is attached to an order and is not in this queue.
+      // Showing it here would invite a second allocation the service refuses.
       .where(inArray(payments.state, ['UNMATCHED', 'RECEIVED'] as never))
       .orderBy(desc(payments.createdAt))
       .limit(100);
@@ -376,6 +497,7 @@ export function buildOpsConsole(deps: OpsDeps) {
                   <td class="mono">${esc(ago(p.createdAt))}</td>
                   <td>
                     <form class="inline" method="post" action="/ops/payments/${esc(p.id)}/allocate">
+                      ${csrfInput(session)}
                       <input type="text" name="orderCode" placeholder="ORD-…" required>
                       <button class="btn primary" type="submit">Allocate</button>
                     </form>
@@ -433,6 +555,7 @@ export function buildOpsConsole(deps: OpsDeps) {
   /* ---------------- payouts ---------------- */
 
   app.get('/ops/payouts', async (c) => {
+    const session = c.get('session');
     const cts = await counts();
     const rows = await db
       .select()
@@ -465,6 +588,7 @@ export function buildOpsConsole(deps: OpsDeps) {
                   <td>${
                     p.state === 'PENDING_APPROVAL'
                       ? `<form class="inline" method="post" action="/ops/payouts/${esc(p.id)}/approve">
+                           ${csrfInput(session)}
                            <button class="btn primary" type="submit">Approve</button>
                          </form>`
                       : ''
@@ -486,7 +610,8 @@ export function buildOpsConsole(deps: OpsDeps) {
    */
   app.post('/ops/payments/:id/allocate', async (c) => {
     const p = who(c);
-    const form = await c.req.parseBody();
+    // Reuse the body the CSRF check already parsed; the stream is consumed.
+    const form = c.get('parsedForm') ?? (await c.req.parseBody());
     const orderCode = String(form.orderCode ?? '');
 
     try {
@@ -497,8 +622,8 @@ export function buildOpsConsole(deps: OpsDeps) {
         at: new Date().toISOString(),
       });
       const msg = r.orderAdvanced
-        ? `Allocated ${egpStr(r.amountPiastres)} EGP to ${r.orderCode}. The deposit is covered and the order has moved.`
-        : `Allocated ${egpStr(r.amountPiastres)} EGP to ${r.orderCode}. Still short of the ${egpStr(r.depositDuePiastres)} EGP deposit, so the order has not moved.`;
+        ? `Allocated ${egpStr(r.amountPiastres)} EGP to ${r.orderCode}. That brings the total to ${egpStr(r.totalReconciledPiastres)} EGP, the deposit is covered and the order has moved.`
+        : `Allocated ${egpStr(r.amountPiastres)} EGP to ${r.orderCode}. Reconciled so far: ${egpStr(r.totalReconciledPiastres)} of ${egpStr(r.depositDuePiastres)} EGP. This money is now attached to the order and cannot be moved elsewhere.`;
       return c.redirect(`/ops/payments?done=${encodeURIComponent(msg)}`);
     } catch (e) {
       return c.redirect(`/ops/payments?blocked=${encodeURIComponent(serialiseBlock(e))}`);
@@ -562,6 +687,15 @@ function flashFor(c: any): string {
   return out;
 }
 
+/**
+ * The hidden CSRF field. Every form in this console includes it; a form without
+ * one is refused, which is deliberate — the failure is visible rather than a
+ * quietly unprotected endpoint.
+ */
+function csrfInput(session: StaffSession | undefined): string {
+  return session ? `<input type="hidden" name="${CSRF_FIELD}" value="${esc(session.csrfToken)}">` : '';
+}
+
 function kv(k: string, v: string): string {
   return `<tr><td style="width:200px;color:var(--muted)">${esc(k)}</td><td>${v}</td></tr>`;
 }
@@ -589,6 +723,59 @@ const TONES: Record<string, 'ok' | 'warn' | 'bad' | 'neutral'> = {
 
 function stateP(state: string): string {
   return pill(state.toLowerCase().replace(/_/g, ' '), TONES[state] ?? 'neutral');
+}
+
+/**
+ * The login form.
+ *
+ * No "forgot password", no self-service reset, no account creation. This is a
+ * closed staff console; adding an account is an administrative act, and a reset
+ * flow is an attack surface guarding nothing but a handful of internal users.
+ */
+function loginPage(error?: string): string {
+  return layout({
+    title: 'Sign in',
+    active: '',
+    body: `
+      ${error ? `<div class="block"><b>Those details were not recognised.</b><p>Check the identifier and passphrase and try again.</p></div>` : ''}
+      <div class="card" style="padding:22px;max-width:420px">
+        <form method="post" action="/ops/login">
+          <label class="lb" for="identifier">Staff identifier</label>
+          <input type="text" id="identifier" name="identifier" required autocomplete="username"
+                 style="width:100%;margin-bottom:14px">
+          <label class="lb" for="secret">Passphrase</label>
+          <input type="password" id="secret" name="secret" required autocomplete="current-password"
+                 style="width:100%;margin-bottom:18px">
+          <button class="btn primary" type="submit" style="width:100%">Sign in</button>
+        </form>
+      </div>
+      <p class="lede" style="margin-top:16px;max-width:420px">
+        Sessions last 8 hours and end after 45 minutes idle. Sign out when you leave a shared machine —
+        this console can move money.
+      </p>`,
+  });
+}
+
+/**
+ * Shown when a form arrives without a valid CSRF token.
+ *
+ * Says plainly what happened rather than a bare 403, because the most common
+ * cause is innocent — a form left open past its session — and the person needs
+ * to know their action did not go through.
+ */
+function csrfFailedPage(): string {
+  return layout({
+    title: 'Request refused',
+    active: '',
+    body: `<div class="block">
+      <b>That request could not be verified.</b>
+      <p>Nothing was changed. This usually means the page was left open until the session expired.
+         Sign in again and repeat the action. If you did not submit anything, someone may have tried
+         to submit it on your behalf — tell whoever runs this system.</p>
+      <code>D01 · CSRF_TOKEN_INVALID</code>
+    </div>
+    <a class="btn" href="/ops">Back to the console</a>`,
+  });
 }
 
 function signInPage(): string {

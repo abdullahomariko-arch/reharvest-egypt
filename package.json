@@ -17,11 +17,18 @@
     "db:generate": "drizzle-kit generate",
     "export:web": "npm --prefix apps/mobile run export",
     "dev:api": "tsx watch apps/api/src/index.ts",
-    "db:migrate": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f packages/db/migrations/0000_init.sql -f packages/db/migrations/0001_invariants.sql -f packages/db/migrations/0002_lot_terms.sql -f packages/db/migrations/0003_order_idempotency.sql -f packages/db/migrations/0004_inbound_payment_states.sql",
+    "db:migrate": "node scripts/migrate.mjs fresh",
     "db:seed": "tsx packages/db/scripts/seed.ts",
     "test:e2e": "node --import tsx apps/api/test/e2e.mjs",
     "test:db": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f packages/db/test/invariants.proof.sql",
-    "db:proof": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f packages/db/test/invariants.proof.sql"
+    "db:proof": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f packages/db/test/invariants.proof.sql",
+    "test:integration": "node scripts/run-integration.mjs",
+    "keys:status": "tsx scripts/beneficiary-keys.ts status",
+    "keys:rotate": "tsx scripts/beneficiary-keys.ts rotate",
+    "keys:verify": "tsx scripts/beneficiary-keys.ts verify",
+    "db:migrate:upgrade": "node scripts/migrate.mjs upgrade",
+    "build": "node scripts/build-server.mjs",
+    "start": "node dist/server.js"
   },
   "devDependencies": {
     "tsx": "^4.19.0",

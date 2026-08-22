@@ -18,6 +18,7 @@ import { issueToken, verifyToken, AuthError, makeAuthenticator, requireRole } fr
 import { buildLotRoutes } from './http/lot-routes.ts';
 import { LotService, OrderService } from './service/lot-order-service.ts';
 import { CRATE_SPECS } from '@reharvest/core/quantity';
+import { scopeKey, hashRequest } from './repo/idempotency.ts';
 import type { LotRepo, LotRow, OrderRepo2, OrderRow } from './service/lot-order-service.ts';
 
 const SECRET = 'test-signing-secret';
@@ -148,6 +149,39 @@ function memoryRepos() {
   return { lotRepo, orderRepo };
 }
 
+/**
+ * An in-memory stand-in for the Postgres idempotency store, implementing the
+ * same reserve/complete contract. The real store is exercised against Postgres
+ * and through HTTP in the integration tests; this keeps the route tests fast.
+ */
+function memoryIdempotency() {
+  const rows = new Map<string, { hash: string; state: 'IN_PROGRESS' | 'COMPLETED'; response?: { status: number; body: unknown }; at: string }>();
+  return {
+    async reserve(scope: any, body: unknown) {
+      const key = scopeKey(scope);
+      const hash = hashRequest(scope.path, body);
+      const row = rows.get(key);
+      if (!row) {
+        rows.set(key, { hash, state: 'IN_PROGRESS', at: new Date().toISOString() });
+        return { kind: 'reserved' as const, scopedKey: key };
+      }
+      if (row.hash !== hash) return { kind: 'conflict' as const, reason: 'different request' };
+      if (row.state === 'COMPLETED') return { kind: 'completed' as const, response: row.response! };
+      return { kind: 'in_progress' as const, startedAt: row.at };
+    },
+    async complete(key: string, response: { status: number; body: unknown }) {
+      const row = rows.get(key);
+      if (row) rows.set(key, { ...row, state: 'COMPLETED', response });
+    },
+    async release(key: string) {
+      rows.delete(key);
+    },
+    async sweep() {
+      return 0;
+    },
+  };
+}
+
 function buildApp() {
   const { lotRepo, orderRepo } = memoryRepos();
   const clock = { now: () => '2026-08-18T09:00:00Z' };
@@ -155,6 +189,7 @@ function buildApp() {
     lots: new LotService(lotRepo, clock),
     orders: new OrderService(lotRepo, orderRepo, clock),
     authenticate: makeAuthenticator(SECRET),
+    idempotency: memoryIdempotency() as never,
     distanceKm: () => 28,
     originName: () => 'محطة فرز النوبارية',
   });

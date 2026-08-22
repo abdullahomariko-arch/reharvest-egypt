@@ -13,7 +13,7 @@ payments both sides trust enough to stop arguing about.
 
 ```bash
 pnpm install
-pnpm test          # 59 acceptance tests, keyed to catalog domain IDs
+npm test           # 149 unit tests across 42 suites
 pnpm typecheck
 ```
 
@@ -73,3 +73,30 @@ qualified Egyptian professional before production: NFSA food-safety duties, ETA
 e-invoicing and tax treatment, the legal form of the supplier and buyer contracts,
 and whether this trading structure needs a CBE-regulated payment licence or can
 operate as a merchant of record.
+
+
+## Installing
+
+There are two procedures and they are not interchangeable — see `docs/RUNBOOK.md`.
+
+| | |
+|---|---|
+| Fresh database | `npm run db:migrate` — all 15 migrations, encryption mandatory at the end |
+| Existing database | `npm run db:migrate:upgrade`, backfill bank details, then apply `0009` |
+
+## Verifying
+
+```bash
+npm test                  # 149 unit tests
+npm run db:proof          # 10 SQL invariant proofs
+npm run test:integration  # 8 suites; needs Postgres and two API instances
+```
+
+## Verification status
+
+V12 was verified on 21 August 2026. All five GitHub Actions jobs passed: static
+checks, database migrations and invariant proofs, the Docker image build/start
+probe, two-instance HTTP integration, and the mobile web bundle. The green run
+is recorded at:
+
+https://github.com/abdullahomariko-arch/reharvest-egypt/actions/runs/32463473376
